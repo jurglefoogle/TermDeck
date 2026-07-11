@@ -1,0 +1,9 @@
+node_modules/
+dist/
+release/
+src-tauri/target/
+*.log
+*.tsbuildinfo
+.vite/
+.DS_Store
+Thumbs.db

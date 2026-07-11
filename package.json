@@ -1,0 +1,35 @@
+{
+  "name": "termdeck",
+  "version": "0.2.0",
+  "private": true,
+  "description": "A Rust and Svelte workspace terminal manager with automatic tiling.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "tauri": "tauri",
+    "desktop": "tauri dev",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "build": "npm run check && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "tauri build",
+    "package:win": "tauri build --bundles nsis",
+    "package:linux": "tauri build --bundles appimage,deb"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "svelte": "^5.56.4"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "jsdom": "^28.1.0",
+    "svelte-check": "^4.4.5",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
+  }
+}

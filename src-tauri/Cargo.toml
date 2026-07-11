@@ -1,0 +1,27 @@
+[package]
+name = "termdeck"
+version = "0.2.0"
+description = "A Rust-powered workspace terminal manager"
+authors = ["Jonathan Peters"]
+edition = "2024"
+
+[lib]
+name = "termdeck_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+dirs = "6"
+portable-pty = "0.9"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
