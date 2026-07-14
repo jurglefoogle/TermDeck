@@ -102,11 +102,14 @@ fn resolve_shell() -> (String, Vec<String>) {
     if let Ok(shell) = std::env::var("TERMDECK_SHELL") {
         if !shell.trim().is_empty() {
             #[cfg(target_os = "windows")]
-            if !Path::new(&shell).is_absolute() {
-                if let Some(resolved) = find_windows_executable(&shell) {
-                    return (resolved, Vec::new());
-                }
-            }
+            let shell = if !Path::new(&shell).is_absolute() {
+                find_windows_executable(&shell).unwrap_or(shell)
+            } else {
+                shell
+            };
+            #[cfg(target_os = "windows")]
+            return (shell.clone(), windows_shell_args(&shell));
+            #[cfg(not(target_os = "windows"))]
             return (shell, Vec::new());
         }
     }
@@ -123,7 +126,7 @@ fn resolve_shell() -> (String, Vec<String>) {
                 .to_string_lossy()
                 .into_owned()
         });
-        (shell, vec!["-NoLogo".to_string()])
+        (shell.clone(), windows_shell_args(&shell))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -146,6 +149,24 @@ fn find_windows_executable(name: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty() && Path::new(line).is_file())
         .map(ToOwned::to_owned)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shell_args(shell: &str) -> Vec<String> {
+    let executable = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if executable == "pwsh.exe" || executable == "powershell.exe" {
+        return vec![
+            "-NoLogo".to_string(),
+            "-NoExit".to_string(),
+            "-Command".to_string(),
+            "function global:pwd { (Get-Location).Path }".to_string(),
+        ];
+    }
+    Vec::new()
 }
 
 impl TerminalManager {
@@ -493,5 +514,22 @@ mod tests {
             .expect("normalize current directory");
         assert_eq!(PathBuf::from(info.directory), canonical);
         assert!(!info.suggested_name.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_shell_args_include_pwd_bootstrap() {
+        let args = windows_shell_args("C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+        assert_eq!(args[0], "-NoLogo");
+        assert_eq!(args[1], "-NoExit");
+        assert_eq!(args[2], "-Command");
+        assert!(args[3].contains("function global:pwd"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn non_powershell_shell_uses_no_bootstrap_args() {
+        let args = windows_shell_args("C:\\tools\\bash.exe");
+        assert!(args.is_empty());
     }
 }
