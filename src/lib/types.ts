@@ -10,6 +10,8 @@ export type Workspace = {
   cwd: string;
   terminals: TerminalSession[];
   activeTerminalId: string | null;
+  splitRatios?: number[][];
+  splitRatio?: number;
 };
 
 export type LocatedTerminal = {
