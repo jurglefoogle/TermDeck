@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, State};
 
 const MAX_TERMINAL_ID_LEN: usize = 100;
+const MAX_NATIVE_HISTORY_BYTES: usize = 24 * 1024;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OSC52_ENCODED_BYTES: usize = 4 * 1024 * 1024;
 const OSC52_PREFIX: &[u8] = b"\x1b]52;";
@@ -247,7 +248,33 @@ fn selected_shell() -> String {
     }
 }
 
-fn resolve_shell(_session_id: &str, _generation: u64) -> Result<ShellLaunch, String> {
+fn command_history_environment(history: Vec<String>) -> Vec<(String, String)> {
+    let mut retained = Vec::new();
+    let mut byte_count = 0;
+    for command in history.into_iter().rev() {
+        let command = command.trim();
+        if command.is_empty() || command.contains('\0') {
+            continue;
+        }
+        let next_size = byte_count + command.len() + usize::from(!retained.is_empty());
+        if next_size > MAX_NATIVE_HISTORY_BYTES {
+            break;
+        }
+        byte_count = next_size;
+        retained.push(command.to_string());
+    }
+    retained.reverse();
+    if retained.is_empty() {
+        Vec::new()
+    } else {
+        vec![(
+            "TERMDECK_COMMAND_HISTORY".to_string(),
+            BASE64.encode(retained.join("\0")),
+        )]
+    }
+}
+
+fn resolve_shell(_session_id: &str, _generation: u64, history: Vec<String>) -> Result<ShellLaunch, String> {
     let shell = selected_shell();
 
     #[cfg(target_os = "windows")]
@@ -255,14 +282,14 @@ fn resolve_shell(_session_id: &str, _generation: u64) -> Result<ShellLaunch, Str
         Ok(ShellLaunch {
             args: windows_shell_args(&shell),
             shell,
-            environment: Vec::new(),
+            environment: command_history_environment(history),
             init_path: None,
         })
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        unix_shell_launch(shell, _session_id, _generation)
+        unix_shell_launch(shell, _session_id, _generation, history)
     }
 }
 
@@ -291,14 +318,14 @@ fn windows_shell_args(shell: &str) -> Vec<String> {
             "-NoLogo".to_string(),
             "-NoExit".to_string(),
             "-Command".to_string(),
-            "$script:termdeckPrompt = (Get-Command prompt -CommandType Function).ScriptBlock; function global:prompt { $uri = [System.Uri]::new((Get-Location).Path).AbsoluteUri; [Console]::Write(\"$([char]27)]7;$uri$([char]7)\"); & $script:termdeckPrompt }".to_string(),
+            "$rawHistory = $env:TERMDECK_COMMAND_HISTORY; Remove-Item Env:TERMDECK_COMMAND_HISTORY -ErrorAction SilentlyContinue; if ($rawHistory -and (Get-Module -ListAvailable -Name PSReadLine)) { Import-Module PSReadLine; $global:termdeckHistory = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($rawHistory)).Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)); if ($global:termdeckHistory.Count) { $global:termdeckHistoryIndex = $global:termdeckHistory.Count; $global:termdeckHistoryDraft = ''; Set-PSReadLineKeyHandler -Key UpArrow -ScriptBlock { $line = ''; $cursor = 0; [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor); if ($global:termdeckHistoryIndex -eq $global:termdeckHistory.Count) { $global:termdeckHistoryDraft = $line }; if ($global:termdeckHistoryIndex -gt 0) { $global:termdeckHistoryIndex--; [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $global:termdeckHistory[$global:termdeckHistoryIndex], $null, $null) } }; Set-PSReadLineKeyHandler -Key DownArrow -ScriptBlock { $line = ''; $cursor = 0; [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor); if ($global:termdeckHistoryIndex -lt ($global:termdeckHistory.Count - 1)) { $global:termdeckHistoryIndex++; $replacement = $global:termdeckHistory[$global:termdeckHistoryIndex] } else { $global:termdeckHistoryIndex = $global:termdeckHistory.Count; $replacement = $global:termdeckHistoryDraft }; [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $replacement, $null, $null) } } }; $script:termdeckPrompt = (Get-Command prompt -CommandType Function).ScriptBlock; function global:prompt { $uri = [System.Uri]::new((Get-Location).Path).AbsoluteUri; [Console]::Write(\"$([char]27)]7;$uri$([char]7)\"); & $script:termdeckPrompt }".to_string(),
         ];
     }
     Vec::new()
 }
 
 #[cfg(not(target_os = "windows"))]
-fn unix_shell_launch(shell: String, session_id: &str, generation: u64) -> Result<ShellLaunch, String> {
+fn unix_shell_launch(shell: String, session_id: &str, generation: u64, history: Vec<String>) -> Result<ShellLaunch, String> {
     let executable = Path::new(&shell)
         .file_name()
         .and_then(|name| name.to_str())
@@ -308,12 +335,15 @@ fn unix_shell_launch(shell: String, session_id: &str, generation: u64) -> Result
 
     if executable == "bash" {
         let init_path = path.with_extension("bashrc");
+        let init = format!(
+            "if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n{}",
+            unix_history_setup(&history, "history -s "),
+        ) + r#"__termdeck_emit_cwd() { printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$(pwd -P)"; }
+PROMPT_COMMAND="__termdeck_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+"#;
         fs::write(
             &init_path,
-            r#"if [ -r "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
-__termdeck_emit_cwd() { printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$(pwd -P)"; }
-PROMPT_COMMAND="__termdeck_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
-"#,
+            init,
         )
         .map_err(|error| format!("Unable to prepare Bash integration: {error}"))?;
         return Ok(ShellLaunch {
@@ -327,16 +357,15 @@ PROMPT_COMMAND="__termdeck_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     if executable == "zsh" {
         fs::create_dir_all(&path).map_err(|error| format!("Unable to prepare Zsh integration: {error}"))?;
         let init_path = path.join(".zshrc");
+        let init = format!(
+            "if [[ -n \"$TERMDECK_ORIGINAL_ZDOTDIR\" && -r \"$TERMDECK_ORIGINAL_ZDOTDIR/.zshrc\" ]]; then\n  source \"$TERMDECK_ORIGINAL_ZDOTDIR/.zshrc\"\nelif [[ -r \"$HOME/.zshrc\" ]]; then\n  source \"$HOME/.zshrc\"\nfi\n{}",
+            unix_history_setup(&history, "print -s -- "),
+        ) + r#"function __termdeck_emit_cwd() { print -n -- "\e]7;file://${HOSTNAME:-localhost}${PWD}\a"; }
+precmd_functions+=(__termdeck_emit_cwd)
+"#;
         fs::write(
             &init_path,
-            r#"if [[ -n "$TERMDECK_ORIGINAL_ZDOTDIR" && -r "$TERMDECK_ORIGINAL_ZDOTDIR/.zshrc" ]]; then
-  source "$TERMDECK_ORIGINAL_ZDOTDIR/.zshrc"
-elif [[ -r "$HOME/.zshrc" ]]; then
-  source "$HOME/.zshrc"
-fi
-function __termdeck_emit_cwd() { print -n -- "\e]7;file://${HOSTNAME:-localhost}${PWD}\a"; }
-precmd_functions+=(__termdeck_emit_cwd)
-"#,
+            init,
         )
         .map_err(|error| format!("Unable to prepare Zsh integration: {error}"))?;
         return Ok(ShellLaunch {
@@ -351,6 +380,15 @@ precmd_functions+=(__termdeck_emit_cwd)
             ],
             init_path: Some(path),
         });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn unix_history_setup(history: &[String], command: &str) -> String {
+        history
+            .iter()
+            .filter(|entry| !entry.is_empty() && !entry.contains('\0'))
+            .map(|entry| format!("{command}'{}'\n", entry.replace('\'', "'\\''")))
+            .collect()
     }
 
     Ok(ShellLaunch {
@@ -390,6 +428,7 @@ impl TerminalManager {
 fn spawn_terminal(
     session_id: String,
     cwd: String,
+    history: Vec<String>,
     rows: u16,
     cols: u16,
     app: AppHandle,
@@ -410,7 +449,7 @@ fn spawn_terminal(
     let working_directory = existing_directory(&cwd);
     let working_directory_string = working_directory.to_string_lossy().into_owned();
     let generation = state.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
-    let launch = resolve_shell(&session_id, generation)?;
+    let launch = resolve_shell(&session_id, generation, history)?;
     let shell = launch.shell.clone();
 
     let pair = native_pty_system()
@@ -721,6 +760,21 @@ mod tests {
         assert!(!info.suggested_name.is_empty());
     }
 
+    #[test]
+    fn encodes_recent_command_history_for_shell_startup() {
+        let environment = command_history_environment(vec![
+            "first".to_string(),
+            "".to_string(),
+            "second".to_string(),
+        ]);
+        assert_eq!(environment.len(), 1);
+        assert_eq!(environment[0].0, "TERMDECK_COMMAND_HISTORY");
+        assert_eq!(
+            BASE64.decode(&environment[0].1).expect("decode history"),
+            b"first\0second"
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn powershell_shell_args_include_pwd_bootstrap() {
@@ -730,6 +784,7 @@ mod tests {
         assert_eq!(args[2], "-Command");
         assert!(args[3].contains("function global:prompt"));
         assert!(args[3].contains("]7;"));
+        assert!(args[3].contains("Set-PSReadLineKeyHandler"));
     }
 
     #[cfg(target_os = "windows")]

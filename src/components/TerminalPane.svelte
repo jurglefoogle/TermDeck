@@ -36,8 +36,6 @@
   let shellName = 'shell';
   let pendingEvents: PtyEvent[] = [];
   let currentCommand = '';
-  let historyIndex = -1;
-  let historyDraft = '';
   let retainedHistory = terminal.commandHistory ?? [];
   let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -99,7 +97,6 @@
           }
         }
         currentCommand = '';
-        historyIndex = -1;
         continue;
       }
       if (character === '\x7f' || character === '\b') {
@@ -108,22 +105,6 @@
       }
       if (character >= ' ') currentCommand += character;
     }
-  }
-
-  function restoreHistory(direction: -1 | 1): boolean {
-    if (!retainCommandHistory || !xterm) return false;
-    const history = retainedHistory;
-    if (!history.length) return false;
-    if (historyIndex < 0) {
-      historyDraft = currentCommand;
-      historyIndex = direction < 0 ? history.length - 1 : -1;
-    } else {
-      historyIndex = Math.max(-1, Math.min(history.length - 1, historyIndex + direction));
-    }
-    const command = historyIndex < 0 ? historyDraft : history[historyIndex];
-    currentCommand = command;
-    invoke('write_terminal', { sessionId: terminal.id, data: `\x15${command}` }).catch(() => undefined);
-    return true;
   }
 
   async function fitAndResize() {
@@ -149,6 +130,7 @@
       const info = await invoke<TerminalInfo>('spawn_terminal', {
         sessionId: terminal.id,
         cwd: terminal.cwd,
+        history: retainCommandHistory ? terminal.commandHistory ?? [] : [],
         cols: xterm.cols,
         rows: xterm.rows,
       });
@@ -201,12 +183,6 @@
       const restoredScrollback = terminal.scrollbackAnsi ?? terminal.scrollback?.join('\r\n');
       if (restoredScrollback) xterm.write(restoredScrollback);
     }
-    xterm.attachCustomKeyEventHandler((event) => {
-      if (event.type !== 'keydown') return true;
-      if (event.key === 'ArrowUp' && restoreHistory(-1)) return false;
-      if (event.key === 'ArrowDown' && restoreHistory(1)) return false;
-      return true;
-    });
     xterm.open(host);
 
     const input = xterm.onData((data) => {
