@@ -1,3 +1,4 @@
+use arboard::Clipboard;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
@@ -12,6 +13,83 @@ use tauri::{AppHandle, Emitter, State};
 
 const MAX_TERMINAL_ID_LEN: usize = 100;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
+const MAX_OSC52_ENCODED_BYTES: usize = 4 * 1024 * 1024;
+const OSC52_PREFIX: &[u8] = b"\x1b]52;";
+
+#[derive(Default)]
+struct Osc52ClipboardParser {
+    pending: Vec<u8>,
+}
+
+impl Osc52ClipboardParser {
+    fn consume(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.pending.extend_from_slice(bytes);
+        let mut clipboard_texts = Vec::new();
+
+        loop {
+            let Some(start) = self
+                .pending
+                .windows(OSC52_PREFIX.len())
+                .position(|window| window == OSC52_PREFIX)
+            else {
+                let retain = (1..OSC52_PREFIX.len())
+                    .rev()
+                    .find(|&length| self.pending.ends_with(&OSC52_PREFIX[..length]))
+                    .unwrap_or(0);
+                if retain == 0 {
+                    self.pending.clear();
+                } else {
+                    self.pending = self.pending.split_off(self.pending.len() - retain);
+                }
+                break;
+            };
+
+            if start > 0 {
+                self.pending.drain(..start);
+            }
+
+            let terminator = (OSC52_PREFIX.len()..self.pending.len()).find_map(|index| {
+                if self.pending[index] == 0x07 {
+                    Some((index, 1))
+                } else if self.pending[index] == 0x1b
+                    && self.pending.get(index + 1) == Some(&b'\\')
+                {
+                    Some((index, 2))
+                } else {
+                    None
+                }
+            });
+            let Some((end, terminator_len)) = terminator else {
+                if self.pending.len() > OSC52_PREFIX.len() + MAX_OSC52_ENCODED_BYTES {
+                    self.pending.clear();
+                }
+                break;
+            };
+
+            let payload = &self.pending[OSC52_PREFIX.len()..end];
+            if payload.len() <= MAX_OSC52_ENCODED_BYTES
+                && let Some(separator) = payload.iter().position(|&byte| byte == b';')
+            {
+                let encoded = &payload[separator + 1..];
+                let encoded = encoded
+                    .iter()
+                    .copied()
+                    .filter(|byte| !byte.is_ascii_whitespace())
+                    .collect::<Vec<_>>();
+                if !encoded.is_empty() && encoded != b"?" {
+                    if let Ok(decoded) = BASE64.decode(encoded) {
+                        if let Ok(text) = String::from_utf8(decoded) {
+                            clipboard_texts.push(text);
+                        }
+                    }
+                }
+            }
+            self.pending.drain(..end + terminator_len);
+        }
+
+        clipboard_texts
+    }
+}
 
 #[derive(Clone, Default)]
 struct TerminalManager {
@@ -268,10 +346,18 @@ fn spawn_terminal(
     let output_session_id = session_id.clone();
     std::thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
+        let mut osc52_parser = Osc52ClipboardParser::default();
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
+                    for text in osc52_parser.consume(&buffer[..read]) {
+                        if let Err(error) = Clipboard::new()
+                            .and_then(|mut clipboard| clipboard.set_text(text))
+                        {
+                            eprintln!("Unable to copy OSC52 terminal content: {error}");
+                        }
+                    }
                     let _ = output_app.emit(
                         "pty-event",
                         PtyEvent {
@@ -531,5 +617,33 @@ mod tests {
     fn non_powershell_shell_uses_no_bootstrap_args() {
         let args = windows_shell_args("C:\\tools\\bash.exe");
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn extracts_osc52_clipboard_text_across_reads() {
+        let mut parser = Osc52ClipboardParser::default();
+        assert_eq!(parser.consume(b"before\x1b]"), Vec::<String>::new());
+        assert_eq!(
+            parser.consume(b"52;c;Y29waWVk\x07after"),
+            vec!["copied".to_string()]
+        );
+    }
+
+    #[test]
+    fn extracts_osc52_clipboard_text_with_st_terminator() {
+        let mut parser = Osc52ClipboardParser::default();
+        assert_eq!(
+            parser.consume(b"\x1b]52;c;Y29waWVk\x1b\\"),
+            vec!["copied".to_string()]
+        );
+    }
+
+    #[test]
+    fn discards_oversized_incomplete_osc52_sequence() {
+        let mut parser = Osc52ClipboardParser::default();
+        let mut sequence = OSC52_PREFIX.to_vec();
+        sequence.resize(OSC52_PREFIX.len() + MAX_OSC52_ENCODED_BYTES + 1, b'a');
+        assert_eq!(parser.consume(&sequence), Vec::<String>::new());
+        assert_eq!(parser.pending, Vec::<u8>::new());
     }
 }
