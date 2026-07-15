@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  adjustRowSplitRatios,
-  clampSplitRatio,
-  computeTileLayout,
-  computeTileStyles,
-  distributeRows,
-  moveTerminal,
-  normalizeSplitRatiosForRows,
-} from './workspaces';
+import { computeTileStyles, distributeRows, moveTerminal } from './workspaces';
 import type { Workspace } from './types';
 
 describe('automatic terminal layout', () => {
@@ -18,69 +10,6 @@ describe('automatic terminal layout', () => {
     const items = Array.from({ length: count }, (_, index) => ({ id: String(index), name: '', cwd: '' }));
     expect(distributeRows(items).map((row) => row.length)).toEqual(expected);
     expect(Object.keys(computeTileStyles(items))).toHaveLength(count);
-  });
-
-  it('uses custom row split ratios for four terminals across two rows', () => {
-    const terminals = [
-      { id: 'one', name: 'One', cwd: '/a' },
-      { id: 'two', name: 'Two', cwd: '/a' },
-      { id: 'three', name: 'Three', cwd: '/a' },
-      { id: 'four', name: 'Four', cwd: '/a' },
-    ];
-    const styles = computeTileStyles(terminals, [
-      [0.6, 0.4],
-      [0.35, 0.65],
-    ]);
-    expect(styles.one).toContain('width: calc(60% - 8px)');
-    expect(styles.two).toContain('left: calc(60% + 4px)');
-    expect(styles.three).toContain('width: calc(35% - 8px)');
-    expect(styles.four).toContain('left: calc(35% + 4px)');
-  });
-
-  it('builds one resize handle per side-by-side boundary', () => {
-    const terminals = Array.from({ length: 4 }, (_, index) => ({ id: String(index), name: '', cwd: '' }));
-    const layout = computeTileLayout(terminals, [[0.5, 0.5], [0.3, 0.7]]);
-    expect(layout.handles).toEqual([
-      { rowIndex: 0, handleIndex: 0, leftPercent: 50, topPercent: 0, heightPercent: 50 },
-      { rowIndex: 1, handleIndex: 0, leftPercent: 30, topPercent: 50, heightPercent: 50 },
-    ]);
-  });
-
-  it('normalizes invalid stored split ratios per row', () => {
-    const rows = [
-      [{ id: 'a' }, { id: 'b' }],
-      [{ id: 'c' }, { id: 'd' }, { id: 'e' }],
-    ];
-    const normalized = normalizeSplitRatiosForRows(rows, [[2, 1], ['bad']]);
-    expect(normalized[0][0]).toBeCloseTo(2 / 3);
-    expect(normalized[0][1]).toBeCloseTo(1 / 3);
-    expect(normalized[1]).toEqual([1 / 3, 1 / 3, 1 / 3]);
-  });
-
-  it('clamps split ratio values to safe limits', () => {
-    expect(clampSplitRatio(0.01)).toBe(0.2);
-    expect(clampSplitRatio(0.99)).toBe(0.8);
-  });
-
-  it('adjusts a specific row boundary while preserving row totals', () => {
-    const next = adjustRowSplitRatios(
-      [[0.5, 0.5], [0.3, 0.7]],
-      1,
-      0,
-      0.4,
-    );
-    expect(next).toEqual([[0.5, 0.5], [0.4, 0.6]]);
-  });
-
-  it('clamps row boundary adjustments to protect minimum pane sizes', () => {
-    const next = adjustRowSplitRatios(
-      [[0.5, 0.5]],
-      0,
-      0,
-      0.01,
-      0.1,
-    );
-    expect(next).toEqual([[0.1, 0.9]]);
   });
 });
 
@@ -100,3 +29,4 @@ describe('workspace terminal movement', () => {
     expect(moved[1].activeTerminalId).toBe('one');
   });
 });
+

@@ -10,15 +10,11 @@
   import TerminalPane from './components/TerminalPane.svelte';
   import type { DockPathInfo, EditTarget, EnvironmentInfo, LocatedTerminal, Workspace } from './lib/types';
   import {
-    adjustRowSplitRatios,
     ACTIVE_WORKSPACE_KEY,
-    DEFAULT_ROW_MIN_SPLIT,
-    computeTileLayout,
+    computeTileStyles,
     createTerminal,
     createWorkspace,
-    distributeRows,
     loadWorkspaces,
-    normalizeSplitRatiosForRows,
     moveTerminal as moveTerminalConfig,
     STORAGE_KEY,
   } from './lib/workspaces';
@@ -42,22 +38,9 @@
   let externalDropWorkspaceId: string | null = null;
   let toast: { title: string; message: string } | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
-  let terminalStage: HTMLDivElement | null = null;
-  let resizingSplit = false;
-  let splitPointerId: number | null = null;
-  let activeResizeHandle: { rowIndex: number; handleIndex: number } | null = null;
-  const KEYBOARD_SPLIT_STEP = 0.03;
 
   $: activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? workspaces[0];
-  $: activeRows = activeWorkspace ? distributeRows(activeWorkspace.terminals) : [];
-  $: normalizedSplitRatios = normalizeSplitRatiosForRows(activeRows, activeWorkspace?.splitRatios);
-  $: tileLayout = activeWorkspace ? computeTileLayout(activeWorkspace.terminals, normalizedSplitRatios) : {
-    styles: {},
-    handles: [],
-    rowSplitRatios: [],
-  };
-  $: tileStyles = tileLayout.styles;
-  $: splitHandles = tileLayout.handles;
+  $: tileStyles = activeWorkspace ? computeTileStyles(activeWorkspace.terminals) : {};
   $: allTerminals = workspaces.flatMap((workspace): LocatedTerminal[] => workspace.terminals.map((terminal) => ({
     terminal,
     workspaceId: workspace.id,
@@ -65,7 +48,6 @@
   })));
   $: localStorage.setItem(STORAGE_KEY, JSON.stringify(workspaces));
   $: localStorage.setItem(ACTIVE_WORKSPACE_KEY, activeWorkspaceId);
-  $: if (resizingSplit && splitHandles.length === 0) stopSplitResize();
 
   function notify(title: string, message: string) {
     toast = { title, message };
@@ -146,92 +128,6 @@
     if (selectTarget) activeWorkspaceId = targetWorkspaceId;
     const target = workspaces.find((workspace) => workspace.id === targetWorkspaceId);
     notify('Terminal moved', `Docked in ${target?.name ?? 'workspace'}. The live process stayed attached.`);
-  }
-
-  function setWorkspaceSplitRatios(workspaceId: string, splitRatios: number[][]) {
-    updateWorkspace(workspaceId, (workspace) => ({ ...workspace, splitRatios }));
-  }
-
-  function updateSplitRatioFromPointer(clientX: number) {
-    if (!terminalStage || !activeResizeHandle) return;
-    const handle = activeResizeHandle;
-    const bounds = terminalStage.getBoundingClientRect();
-    if (bounds.width <= 0) return;
-    const rawBoundary = (clientX - bounds.left) / bounds.width;
-    const nextSplitRatios = adjustRowSplitRatios(
-      normalizedSplitRatios,
-      handle.rowIndex,
-      handle.handleIndex,
-      rawBoundary,
-      DEFAULT_ROW_MIN_SPLIT,
-    );
-    if (!nextSplitRatios) return;
-    setWorkspaceSplitRatios(activeWorkspace.id, nextSplitRatios);
-  }
-
-  function resizeActiveSplit(direction: -1 | 1): boolean {
-    const activeTerminalId = activeWorkspace.activeTerminalId;
-    if (!activeTerminalId) return false;
-    const rowIndex = activeRows.findIndex((row) => row.some((terminal) => terminal.id === activeTerminalId));
-    if (rowIndex < 0) return false;
-    const row = activeRows[rowIndex];
-    if (row.length < 2) return false;
-    const columnIndex = row.findIndex((terminal) => terminal.id === activeTerminalId);
-    if (columnIndex < 0) return false;
-
-    const handleIndex = direction > 0
-      ? (columnIndex < row.length - 1 ? columnIndex : columnIndex - 1)
-      : (columnIndex > 0 ? columnIndex - 1 : 0);
-    const rowRatios = normalizedSplitRatios[rowIndex];
-    if (!rowRatios) return false;
-    const boundary = rowRatios.slice(0, handleIndex + 1).reduce((total, value) => total + value, 0);
-    const nextSplitRatios = adjustRowSplitRatios(
-      normalizedSplitRatios,
-      rowIndex,
-      handleIndex,
-      boundary + (direction * KEYBOARD_SPLIT_STEP),
-      DEFAULT_ROW_MIN_SPLIT,
-    );
-    if (!nextSplitRatios) return false;
-    setWorkspaceSplitRatios(activeWorkspace.id, nextSplitRatios);
-    return true;
-  }
-
-  function handleSplitPointerMove(event: PointerEvent) {
-    if (!resizingSplit || splitPointerId !== event.pointerId) return;
-    updateSplitRatioFromPointer(event.clientX);
-  }
-
-  function stopSplitResize(pointerId?: number) {
-    if (!resizingSplit) return;
-    if (pointerId !== undefined && splitPointerId !== pointerId) return;
-    resizingSplit = false;
-    splitPointerId = null;
-    activeResizeHandle = null;
-    window.removeEventListener('pointermove', handleSplitPointerMove);
-    window.removeEventListener('pointerup', handleSplitPointerUp);
-    window.removeEventListener('pointercancel', handleSplitPointerCancel);
-  }
-
-  function handleSplitPointerUp(event: PointerEvent) {
-    stopSplitResize(event.pointerId);
-  }
-
-  function handleSplitPointerCancel(event: PointerEvent) {
-    stopSplitResize(event.pointerId);
-  }
-
-  function startSplitResize(event: PointerEvent, rowIndex: number, handleIndex: number) {
-    if (!splitHandles.some((handle) => handle.rowIndex === rowIndex && handle.handleIndex === handleIndex)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    splitPointerId = event.pointerId;
-    activeResizeHandle = { rowIndex, handleIndex };
-    resizingSplit = true;
-    window.addEventListener('pointermove', handleSplitPointerMove);
-    window.addEventListener('pointerup', handleSplitPointerUp);
-    window.addEventListener('pointercancel', handleSplitPointerCancel);
-    updateSplitRatioFromPointer(event.clientX);
   }
 
   function moveActiveTerminal(direction: number) {
@@ -332,8 +228,6 @@
       if (terminal) { event.preventDefault(); activateTerminal(activeWorkspace.id, terminal.id); }
     } else if (event.ctrlKey && event.altKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
       event.preventDefault(); cycleWorkspace(event.key === 'ArrowLeft' ? -1 : 1);
-    } else if (!event.ctrlKey && event.altKey && event.shiftKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
-      if (resizeActiveSplit(event.key === 'ArrowLeft' ? -1 : 1)) event.preventDefault();
     } else if (event.ctrlKey && event.shiftKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
       event.preventDefault(); moveActiveTerminal(event.key === 'ArrowLeft' ? -1 : 1);
     } else if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'w') {
@@ -401,7 +295,6 @@
     }
 
     return () => {
-      stopSplitResize();
       window.removeEventListener('keydown', handleKeyboard, true);
       unlistenDrop?.();
       if (toastTimer) clearTimeout(toastTimer);
@@ -490,7 +383,7 @@
         <button class="tab-add" aria-label="New terminal" on:click={() => addTerminal()}><Icon name="plus" size={15} /></button>
       </div>
 
-      <div class="terminal-stage" class:is-resizing={resizingSplit} bind:this={terminalStage}>
+      <div class="terminal-stage">
         {#if activeWorkspace.terminals.length === 0}
           <div class="empty-state"><div class="empty-icon"><Icon name="terminal" size={28} /></div><p class="overline">AVAILABLE WORKSPACE</p><h2>Ready for a terminal</h2><p>New shells open at <strong>{activeWorkspace.cwd || homePath}</strong> and tile automatically.</p><button class="button primary" on:click={() => addTerminal()}><Icon name="plus" /> New terminal</button></div>
         {/if}
@@ -509,19 +402,6 @@
           />
         {/each}
 
-        {#each splitHandles as handle (`${handle.rowIndex}-${handle.handleIndex}`)}
-          <div
-            class="terminal-split-handle"
-            role="separator"
-            aria-label={`Resize terminal panes on row ${handle.rowIndex + 1}`}
-            aria-orientation="vertical"
-            style={`left: calc(${handle.leftPercent}% - 3px); top: calc(${handle.topPercent}% + 8px); height: calc(${handle.heightPercent}% - 16px)`}
-            on:pointerdown={(event) => startSplitResize(event, handle.rowIndex, handle.handleIndex)}
-          >
-            <span></span>
-          </div>
-        {/each}
-
         {#if externalDropActive}
           <div class="external-drop-overlay">
             <div><Icon name="dock" size={28} /><strong>Dock location</strong><span>Open in {workspaces.find((workspace) => workspace.id === (externalDropWorkspaceId || activeWorkspace.id))?.name}</span></div>
@@ -529,7 +409,7 @@
         {/if}
       </div>
 
-      <footer class="status-bar"><span><i></i> Native PTY connected</span><span>Ctrl+Tab terminals · Alt+Shift+←/→ resize · Ctrl+/ shortcuts</span><span>AUTO TILE <Icon name="grid" size={12} /></span></footer>
+      <footer class="status-bar"><span><i></i> Native PTY connected</span><span>Ctrl+Tab terminals · Alt+1–9 workspaces · Ctrl+/ shortcuts</span><span>AUTO TILE <Icon name="grid" size={12} /></span></footer>
     </main>
   </div>
 </div>

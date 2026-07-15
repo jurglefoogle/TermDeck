@@ -7,7 +7,6 @@
       ['New terminal', 'Ctrl', 'Shift', 'T'],
       ['Next / previous', 'Ctrl', 'Tab'],
       ['Focus terminal 1–9', 'Ctrl', '1–9'],
-      ['Resize active pane split', 'Alt', 'Shift', '← / →'],
       ['Rename focused terminal', 'F2'],
       ['Close focused terminal', 'Ctrl', 'Shift', 'W'],
     ]},
