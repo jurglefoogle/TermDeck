@@ -789,6 +789,83 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn powershell_history_handler_restores_the_full_command() {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 30,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("create PTY");
+        let shell = selected_shell();
+        let mut command = CommandBuilder::new(&shell);
+        command.args(windows_shell_args(&shell));
+        command.env(
+            "TERMDECK_COMMAND_HISTORY",
+            BASE64.encode("ls ~/Downloads"),
+        );
+        command.env("TERM", "xterm-256color");
+        command.cwd(home_directory());
+
+        let mut child = pair.slave.spawn_command(command).expect("start PowerShell");
+        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
+        let mut writer = pair.master.take_writer().expect("take PTY writer");
+        drop(pair.slave);
+
+        let (output_sender, output_receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(read) = reader.read(&mut buffer) {
+                if read == 0 {
+                    break;
+                }
+                if output_sender
+                    .send(String::from_utf8_lossy(&buffer[..read]).into_owned())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        let mut output = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut responded_to_cursor_query = false;
+        while std::time::Instant::now() < deadline {
+            let Ok(chunk) = output_receiver.recv_timeout(std::time::Duration::from_millis(100)) else {
+                continue;
+            };
+            output.push_str(&chunk);
+            if !responded_to_cursor_query && output.contains("\x1b[6n") {
+                writer
+                    .write_all(b"\x1b[1;1R")
+                    .expect("respond to cursor position query");
+                writer.flush().expect("flush cursor position response");
+                responded_to_cursor_query = true;
+            }
+            if responded_to_cursor_query && output.contains('>') {
+                break;
+            }
+        }
+        writer.write_all(b"\x1b[A").expect("send up arrow");
+        writer.flush().expect("flush up arrow");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        output.push_str(&output_receiver.try_iter().collect::<String>());
+        child.kill().expect("stop PowerShell");
+        let _ = child.wait();
+
+        while let Ok(chunk) = output_receiver.recv_timeout(std::time::Duration::from_millis(100)) {
+            output.push_str(&chunk);
+        }
+        assert!(
+            output.contains("ls ") && output.contains("~/Downloads"),
+            "PowerShell did not restore the full command. Output: {output:?}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn non_powershell_shell_uses_no_bootstrap_args() {
         let args = windows_shell_args("C:\\tools\\bash.exe");
         assert!(args.is_empty());
