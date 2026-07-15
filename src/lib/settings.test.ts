@@ -14,9 +14,11 @@ describe('settings storage', () => {
     expect(loadSettings(storageWith(JSON.stringify({
       retainCommandHistory: true,
       retainScrollback: true,
+      scrollbackLines: 500,
     })))).toEqual({
       retainCommandHistory: true,
       retainScrollback: true,
+      scrollbackLines: 500,
     });
   });
 
@@ -28,8 +30,12 @@ describe('settings storage', () => {
     })))).toEqual(DEFAULT_SETTINGS);
   });
 
+  it('clamps the stored scrollback line limit', () => {
+    expect(loadSettings(storageWith(JSON.stringify({ scrollbackLines: 10 }))).scrollbackLines).toBe(100);
+    expect(loadSettings(storageWith(JSON.stringify({ scrollbackLines: 700 }))).scrollbackLines).toBe(700);
+  });
+
   it('uses a versioned storage key', () => {
     expect(SETTINGS_STORAGE_KEY).toBe('termdeck.settings.v1');
   });
 });
-

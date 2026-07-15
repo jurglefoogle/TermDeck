@@ -141,6 +141,39 @@
     }));
   }
 
+  function updateTerminalCommandHistory(workspaceId: string, terminalId: string, commandHistory: string[]) {
+    if (!settings.retainCommandHistory) return;
+    updateWorkspace(workspaceId, (workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => (
+        terminal.id === terminalId ? { ...terminal, commandHistory } : terminal
+      )),
+    }));
+  }
+
+  function updateTerminalScrollback(workspaceId: string, terminalId: string, scrollback: string[]) {
+    if (!settings.retainScrollback) return;
+    updateWorkspace(workspaceId, (workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => (
+        terminal.id === terminalId ? { ...terminal, scrollback } : terminal
+      )),
+    }));
+  }
+
+  function updateSettings(next: AppSettings) {
+    settings = next;
+    if (next.retainCommandHistory && next.retainScrollback) return;
+    workspaces = workspaces.map((workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => ({
+        ...terminal,
+        ...(!next.retainCommandHistory ? { commandHistory: [] } : {}),
+        ...(!next.retainScrollback ? { scrollback: [] } : {}),
+      })),
+    }));
+  }
+
   function cycleTerminal(direction: number) {
     if (!activeWorkspace?.terminals.length) return;
     const index = activeWorkspace.terminals.findIndex((terminal) => terminal.id === activeWorkspace.activeTerminalId);
@@ -522,6 +555,11 @@
             onrename={() => { editing = { kind: 'terminal', workspaceId: located.workspaceId, terminalId: located.terminal.id, value: located.terminal.name }; }}
             ondragstart={(event) => startTerminalDrag(event, located.terminal.id, located.workspaceId)}
             oncwdchange={(cwd) => updateTerminalCwd(located.workspaceId, located.terminal.id, cwd)}
+            retainCommandHistory={settings.retainCommandHistory}
+            retainScrollback={settings.retainScrollback}
+            scrollbackLines={settings.scrollbackLines}
+            oncommandhistorychange={(commandHistory) => updateTerminalCommandHistory(located.workspaceId, located.terminal.id, commandHistory)}
+            onscrollbackchange={(scrollback) => updateTerminalScrollback(located.workspaceId, located.terminal.id, scrollback)}
           />
         {/each}
 
@@ -555,7 +593,7 @@
 {/if}
 {#if showShortcuts}<ShortcutOverlay onclose={() => { showShortcuts = false; }} />{/if}
 {#if showDockDialog}<DockDialog onclose={() => { showDockDialog = false; }} onpick={pickDockLocation} />{/if}
-{#if showSettings}<SettingsDialog {settings} onchange={(next) => { settings = next; }} onclose={() => { showSettings = false; }} />{/if}
+{#if showSettings}<SettingsDialog {settings} onchange={updateSettings} onclose={() => { showSettings = false; }} />{/if}
 {#if toast}
   <div class="toast"><div class="toast-icon"><Icon name="spark" /></div><div><strong>{toast.title}</strong><span>{toast.message}</span></div><button aria-label="Dismiss notification" on:click={() => { toast = null; }}><Icon name="close" size={14} /></button></div>
 {/if}

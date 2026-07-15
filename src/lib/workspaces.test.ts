@@ -5,6 +5,7 @@ import {
   computeTileLayout,
   computeTileStyles,
   distributeRows,
+  loadWorkspaces,
   moveTerminal,
   normalizeSplitRatiosForRows,
 } from './workspaces';
@@ -98,5 +99,29 @@ describe('workspace terminal movement', () => {
     expect(moved[0].activeTerminalId).toBe('two');
     expect(moved[1].terminals.map((terminal) => terminal.id)).toEqual(['one']);
     expect(moved[1].activeTerminalId).toBe('one');
+  });
+
+  describe('retained terminal state', () => {
+    it('restores persisted commands and scrollback for the matching terminal', () => {
+      const storage = {
+        getItem: () => JSON.stringify([{
+          id: 'workspace',
+          name: 'Workspace',
+          cwd: '/home/dennis',
+          activeTerminalId: 'terminal',
+          terminals: [{
+            id: 'terminal',
+            name: 'Terminal',
+            cwd: '/home/dennis/project',
+            commandHistory: ['pwd', 'npm test'],
+            scrollback: ['PS> pwd', '/home/dennis/project'],
+          }],
+        }]),
+      };
+
+      const terminal = loadWorkspaces(storage)[0].terminals[0];
+      expect(terminal.commandHistory).toEqual(['pwd', 'npm test']);
+      expect(terminal.scrollback).toEqual(['PS> pwd', '/home/dennis/project']);
+    });
   });
 });

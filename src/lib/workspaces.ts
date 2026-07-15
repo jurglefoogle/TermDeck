@@ -1,4 +1,5 @@
 import type { TerminalSession, Workspace } from './types';
+import { MAX_COMMAND_HISTORY, retainedStringLines } from './terminal-retention';
 
 export const STORAGE_KEY = 'termdeck.workspaces.v2';
 export const LEGACY_STORAGE_KEY = 'termdeck.workspaces.v1';
@@ -61,6 +62,8 @@ function normalizeTerminal(value: unknown, workspaceCwd: string): TerminalSessio
     id: item.id,
     name: item.name.trim() || 'Terminal',
     cwd: typeof item.cwd === 'string' && item.cwd ? item.cwd : workspaceCwd,
+    commandHistory: retainedStringLines(item.commandHistory, MAX_COMMAND_HISTORY),
+    scrollback: retainedStringLines(item.scrollback, 50_000),
   };
 }
 

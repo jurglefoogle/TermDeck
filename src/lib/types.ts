@@ -2,6 +2,8 @@ export type TerminalSession = {
   id: string;
   name: string;
   cwd: string;
+  commandHistory?: string[];
+  scrollback?: string[];
 };
 
 export type Workspace = {
