@@ -228,7 +228,6 @@
     return () => {
       destroyed = true;
       if (scrollbackTimer) clearTimeout(scrollbackTimer);
-      captureScrollback();
       observer.disconnect();
       input.dispose();
       cwdHandler.dispose();
