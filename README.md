@@ -7,6 +7,7 @@ TermDeck is a cross-platform terminal workspace for Windows and Linux, rebuilt w
 - Keeps independent, live terminal groups in named workspaces
 - Opens every new terminal at that workspace's default project folder
 - Automatically tiles terminal panes to fill the available stage
+- Lets you drag pane dividers to resize side-by-side terminals independently within each row
 - Moves a running terminal between workspaces by dragging its tab or pane header
 - Moves the focused terminal with `Ctrl+Shift+Left/Right`
 - Docks folders and files dropped from Explorer or a Linux file manager
@@ -28,6 +29,7 @@ An already-running terminal process cannot be transferred between unrelated PTY 
 | New terminal | `Ctrl+Shift+T` |
 | Next / previous terminal | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Focus terminal 1–9 | `Ctrl+1` through `Ctrl+9` |
+| Resize active pane split | `Alt+Shift+Left/Right` |
 | Switch workspace 1–9 | `Alt+1` through `Alt+9` |
 | Previous / next workspace | `Ctrl+Alt+Left/Right` |
 | Move terminal to adjacent workspace | `Ctrl+Shift+Left/Right` |
