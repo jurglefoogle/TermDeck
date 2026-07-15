@@ -1,5 +1,5 @@
 <script lang="ts">
-  export let name: 'terminal' | 'plus' | 'folder' | 'edit' | 'close' | 'more' | 'grid' | 'restart' | 'chevron' | 'dock' | 'keyboard' | 'arrow-left' | 'arrow-right' | 'spark' = 'terminal';
+  export let name: 'terminal' | 'plus' | 'folder' | 'edit' | 'close' | 'more' | 'grid' | 'restart' | 'chevron' | 'dock' | 'keyboard' | 'settings' | 'arrow-left' | 'arrow-right' | 'spark' = 'terminal';
   export let size = 16;
 </script>
 
@@ -27,6 +27,8 @@
     <path d="M4 5h16v11H4zM8 20h8M12 16v4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" /><path d="m8 9 2 2-2 2m4 0h3" stroke="currentColor" stroke-linecap="round" stroke-width="1.5" />
   {:else if name === 'keyboard'}
     <rect x="3" y="6" width="18" height="12" rx="2" stroke="currentColor" stroke-width="1.6" /><path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M7 14h2m2 0h6" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
+  {:else if name === 'settings'}
+    <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7" /><path d="M12 3.5v2M12 18.5v2M20.5 12h-2M5.5 12h-2M18 6l-1.4 1.4M7.4 16.6 6 18M18 18l-1.4-1.4M7.4 7.4 6 6" stroke="currentColor" stroke-linecap="round" stroke-width="1.7" />
   {:else if name === 'arrow-left'}
     <path d="m14 6-6 6 6 6" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
   {:else if name === 'arrow-right'}
@@ -35,4 +37,3 @@
     <path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.5" />
   {/if}
 </svg>
-

@@ -6,9 +6,11 @@
   import DockDialog from './components/DockDialog.svelte';
   import Icon from './components/Icon.svelte';
   import NameDialog from './components/NameDialog.svelte';
+  import SettingsDialog from './components/SettingsDialog.svelte';
   import ShortcutOverlay from './components/ShortcutOverlay.svelte';
   import TerminalPane from './components/TerminalPane.svelte';
   import type { DockPathInfo, EditTarget, EnvironmentInfo, LocatedTerminal, Workspace } from './lib/types';
+  import { SETTINGS_STORAGE_KEY, loadSettings, type AppSettings } from './lib/settings';
   import {
     adjustRowSplitRatios,
     ACTIVE_WORKSPACE_KEY,
@@ -36,6 +38,8 @@
   let workspaceMenu: string | null = null;
   let showShortcuts = false;
   let showDockDialog = false;
+  let showSettings = false;
+  let settings: AppSettings = loadSettings();
   let draggedTerminal: { terminalId: string; sourceWorkspaceId: string } | null = null;
   let dragOverWorkspaceId: string | null = null;
   let externalDropActive = false;
@@ -65,6 +69,7 @@
   })));
   $: localStorage.setItem(STORAGE_KEY, JSON.stringify(workspaces));
   $: localStorage.setItem(ACTIVE_WORKSPACE_KEY, activeWorkspaceId);
+  $: localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   $: if (resizingSplit && splitHandles.length === 0) stopSplitResize();
 
   function notify(title: string, message: string) {
@@ -314,8 +319,8 @@
   }
 
   function handleKeyboard(event: KeyboardEvent) {
-    if (editing || showDockDialog) {
-      if (event.key === 'Escape') { editing = null; showDockDialog = false; }
+    if (editing || showDockDialog || showSettings) {
+      if (event.key === 'Escape') { editing = null; showDockDialog = false; showSettings = false; }
       return;
     }
     if (showShortcuts && event.key === 'Escape') { showShortcuts = false; return; }
@@ -453,6 +458,7 @@
       <div class="sidebar-tools">
         <button on:click={() => { showDockDialog = true; }}><Icon name="dock" /><span><strong>Dock external</strong><small>Drop a location</small></span></button>
         <button on:click={() => { showShortcuts = true; }}><Icon name="keyboard" /><span><strong>Shortcuts</strong><small>Ctrl + /</small></span></button>
+        <button on:click={() => { showSettings = true; }}><Icon name="settings" /><span><strong>Settings</strong><small>Terminal preferences</small></span></button>
       </div>
       <div class="sidebar-footer">
         <span><i></i> RUST PTY</span><span>{platform.toUpperCase()} · {shell.split(/[\\/]/).pop()}</span>
@@ -539,6 +545,7 @@
 {/if}
 {#if showShortcuts}<ShortcutOverlay onclose={() => { showShortcuts = false; }} />{/if}
 {#if showDockDialog}<DockDialog onclose={() => { showDockDialog = false; }} onpick={pickDockLocation} />{/if}
+{#if showSettings}<SettingsDialog {settings} onchange={(next) => { settings = next; }} onclose={() => { showSettings = false; }} />{/if}
 {#if toast}
   <div class="toast"><div class="toast-icon"><Icon name="spark" /></div><div><strong>{toast.title}</strong><span>{toast.message}</span></div><button aria-label="Dismiss notification" on:click={() => { toast = null; }}><Icon name="close" size={14} /></button></div>
 {/if}
