@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, State};
 
 const MAX_TERMINAL_ID_LEN: usize = 100;
+#[cfg(target_os = "windows")]
 const MAX_NATIVE_HISTORY_BYTES: usize = 24 * 1024;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OSC52_ENCODED_BYTES: usize = 4 * 1024 * 1024;
@@ -248,6 +249,7 @@ fn selected_shell() -> String {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn command_history_environment(history: Vec<String>) -> Vec<(String, String)> {
     let mut retained = Vec::new();
     let mut byte_count = 0;
