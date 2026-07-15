@@ -5,6 +5,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { Terminal } from '@xterm/xterm';
   import '@xterm/xterm/css/xterm.css';
+  import { parseOsc7Cwd } from '../lib/terminal-cwd';
   import type { PtyEvent, TerminalInfo, TerminalSession } from '../lib/types';
   import Icon from './Icon.svelte';
 
@@ -17,6 +18,7 @@
   export let onclose: () => void;
   export let onrename: () => void;
   export let ondragstart: (event: DragEvent) => void;
+  export let oncwdchange: (cwd: string) => void;
 
   let host: HTMLDivElement;
   let xterm: Terminal | null = null;
@@ -120,6 +122,11 @@
     });
     fitAddon = new FitAddon();
     xterm.loadAddon(fitAddon);
+    const cwdHandler = xterm.parser.registerOscHandler(7, (data) => {
+      const cwd = parseOsc7Cwd(data);
+      if (cwd) oncwdchange(cwd);
+      return false;
+    });
     xterm.open(host);
 
     const input = xterm.onData((data) => {
@@ -141,6 +148,7 @@
       destroyed = true;
       observer.disconnect();
       input.dispose();
+      cwdHandler.dispose();
       unlisten?.();
       xterm?.dispose();
       xterm = null;

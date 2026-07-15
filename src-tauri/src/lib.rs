@@ -3,6 +3,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use std::collections::HashMap;
+#[cfg(not(target_os = "windows"))]
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
@@ -145,6 +147,26 @@ struct DockPathInfo {
     suggested_name: String,
 }
 
+struct ShellLaunch {
+    shell: String,
+    args: Vec<String>,
+    environment: Vec<(String, String)>,
+    init_path: Option<PathBuf>,
+}
+
+fn remove_shell_init(path: Option<PathBuf>) {
+    #[cfg(target_os = "windows")]
+    let _ = path;
+    #[cfg(not(target_os = "windows"))]
+    if let Some(path) = path {
+        let _ = if path.is_dir() {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+    }
+}
+
 fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
@@ -168,33 +190,46 @@ fn home_directory() -> PathBuf {
 fn existing_directory(requested: &str) -> PathBuf {
     let requested_path = Path::new(requested);
     if !requested.is_empty() && requested_path.is_dir() {
-        requested_path
+        let directory = requested_path
             .canonicalize()
-            .unwrap_or_else(|_| requested_path.to_path_buf())
+            .unwrap_or_else(|_| requested_path.to_path_buf());
+        #[cfg(target_os = "windows")]
+        return without_windows_verbatim_prefix(directory);
+        #[cfg(not(target_os = "windows"))]
+        return directory;
     } else {
         home_directory()
     }
 }
 
-fn resolve_shell() -> (String, Vec<String>) {
+#[cfg(target_os = "windows")]
+fn without_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    PathBuf::from(value.strip_prefix(r"\\?\").unwrap_or(&value))
+}
+
+fn selected_shell() -> String {
     if let Ok(shell) = std::env::var("TERMDECK_SHELL") {
         if !shell.trim().is_empty() {
             #[cfg(target_os = "windows")]
-            let shell = if !Path::new(&shell).is_absolute() {
-                find_windows_executable(&shell).unwrap_or(shell)
-            } else {
-                shell
-            };
-            #[cfg(target_os = "windows")]
-            return (shell.clone(), windows_shell_args(&shell));
+            {
+                return if !Path::new(&shell).is_absolute() {
+                    find_windows_executable(&shell).unwrap_or(shell)
+                } else {
+                    shell
+                };
+            }
             #[cfg(not(target_os = "windows"))]
-            return (shell, Vec::new());
+            return shell;
         }
     }
 
     #[cfg(target_os = "windows")]
     {
-        let shell = find_windows_executable("pwsh.exe").unwrap_or_else(|| {
+        find_windows_executable("pwsh.exe").unwrap_or_else(|| {
             let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
             Path::new(&system_root)
                 .join("System32")
@@ -203,16 +238,31 @@ fn resolve_shell() -> (String, Vec<String>) {
                 .join("powershell.exe")
                 .to_string_lossy()
                 .into_owned()
-        });
-        (shell.clone(), windows_shell_args(&shell))
+        })
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        (
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
-            Vec::new(),
-        )
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    }
+}
+
+fn resolve_shell(_session_id: &str, _generation: u64) -> Result<ShellLaunch, String> {
+    let shell = selected_shell();
+
+    #[cfg(target_os = "windows")]
+    {
+        Ok(ShellLaunch {
+            args: windows_shell_args(&shell),
+            shell,
+            environment: Vec::new(),
+            init_path: None,
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        unix_shell_launch(shell, _session_id, _generation)
     }
 }
 
@@ -241,10 +291,74 @@ fn windows_shell_args(shell: &str) -> Vec<String> {
             "-NoLogo".to_string(),
             "-NoExit".to_string(),
             "-Command".to_string(),
-            "function global:pwd { (Get-Location).Path }".to_string(),
+            "$script:termdeckPrompt = (Get-Command prompt -CommandType Function).ScriptBlock; function global:prompt { $uri = [System.Uri]::new((Get-Location).Path).AbsoluteUri; [Console]::Write(\"$([char]27)]7;$uri$([char]7)\"); & $script:termdeckPrompt }".to_string(),
         ];
     }
     Vec::new()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unix_shell_launch(shell: String, session_id: &str, generation: u64) -> Result<ShellLaunch, String> {
+    let executable = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let path = std::env::temp_dir().join(format!("termdeck-{session_id}-{generation}"));
+
+    if executable == "bash" {
+        let init_path = path.with_extension("bashrc");
+        fs::write(
+            &init_path,
+            r#"if [ -r "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
+__termdeck_emit_cwd() { printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$(pwd -P)"; }
+PROMPT_COMMAND="__termdeck_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+"#,
+        )
+        .map_err(|error| format!("Unable to prepare Bash integration: {error}"))?;
+        return Ok(ShellLaunch {
+            shell,
+            args: vec!["--rcfile".to_string(), init_path.to_string_lossy().into_owned(), "-i".to_string()],
+            environment: Vec::new(),
+            init_path: Some(init_path),
+        });
+    }
+
+    if executable == "zsh" {
+        fs::create_dir_all(&path).map_err(|error| format!("Unable to prepare Zsh integration: {error}"))?;
+        let init_path = path.join(".zshrc");
+        fs::write(
+            &init_path,
+            r#"if [[ -n "$TERMDECK_ORIGINAL_ZDOTDIR" && -r "$TERMDECK_ORIGINAL_ZDOTDIR/.zshrc" ]]; then
+  source "$TERMDECK_ORIGINAL_ZDOTDIR/.zshrc"
+elif [[ -r "$HOME/.zshrc" ]]; then
+  source "$HOME/.zshrc"
+fi
+function __termdeck_emit_cwd() { print -n -- "\e]7;file://${HOSTNAME:-localhost}${PWD}\a"; }
+precmd_functions+=(__termdeck_emit_cwd)
+"#,
+        )
+        .map_err(|error| format!("Unable to prepare Zsh integration: {error}"))?;
+        return Ok(ShellLaunch {
+            shell,
+            args: vec!["-i".to_string()],
+            environment: vec![
+                ("ZDOTDIR".to_string(), path.to_string_lossy().into_owned()),
+                (
+                    "TERMDECK_ORIGINAL_ZDOTDIR".to_string(),
+                    std::env::var("ZDOTDIR").unwrap_or_default(),
+                ),
+            ],
+            init_path: Some(path),
+        });
+    }
+
+    Ok(ShellLaunch {
+        shell,
+        args: Vec::new(),
+        environment: Vec::new(),
+        init_path: None,
+    })
 }
 
 impl TerminalManager {
@@ -295,8 +409,9 @@ fn spawn_terminal(
 
     let working_directory = existing_directory(&cwd);
     let working_directory_string = working_directory.to_string_lossy().into_owned();
-    let (shell, args) = resolve_shell();
     let generation = state.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
+    let launch = resolve_shell(&session_id, generation)?;
+    let shell = launch.shell.clone();
 
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -308,11 +423,14 @@ fn spawn_terminal(
         .map_err(|error| format!("Unable to create PTY: {error}"))?;
 
     let mut command = CommandBuilder::new(&shell);
-    command.args(args);
+    command.args(launch.args);
     command.cwd(&working_directory);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command.env("TERM_PROGRAM", "TermDeck");
+    for (key, value) in launch.environment {
+        command.env(key, value);
+    }
 
     let mut child = pair
         .slave
@@ -393,8 +511,10 @@ fn spawn_terminal(
     let wait_sessions = state.sessions.clone();
     let wait_session = session.clone();
     let wait_session_id = session_id.clone();
+    let init_path = launch.init_path;
     std::thread::spawn(move || {
         let result = child.wait();
+        remove_shell_init(init_path);
         let (exit_code, signal, message) = match result {
             Ok(status) => (
                 Some(status.exit_code()),
@@ -487,11 +607,10 @@ fn kill_terminal(session_id: String, state: State<'_, TerminalManager>) -> Resul
 
 #[tauri::command]
 fn get_environment() -> EnvironmentInfo {
-    let (shell, _) = resolve_shell();
     EnvironmentInfo {
         home: home_directory().to_string_lossy().into_owned(),
         platform: std::env::consts::OS,
-        shell,
+        shell: selected_shell(),
         smoke_test: std::env::var("TERMDECK_SMOKE_TEST").as_deref() == Ok("1"),
     }
 }
@@ -609,7 +728,8 @@ mod tests {
         assert_eq!(args[0], "-NoLogo");
         assert_eq!(args[1], "-NoExit");
         assert_eq!(args[2], "-Command");
-        assert!(args[3].contains("function global:pwd"));
+        assert!(args[3].contains("function global:prompt"));
+        assert!(args[3].contains("]7;"));
     }
 
     #[cfg(target_os = "windows")]
@@ -617,6 +737,19 @@ mod tests {
     fn non_powershell_shell_uses_no_bootstrap_args() {
         let args = windows_shell_args("C:\\tools\\bash.exe");
         assert!(args.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn removes_windows_verbatim_path_prefix() {
+        assert_eq!(
+            without_windows_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\dennis")),
+            PathBuf::from(r"C:\Users\dennis")
+        );
+        assert_eq!(
+            without_windows_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\server\share")
+        );
     }
 
     #[test]

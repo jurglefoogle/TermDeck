@@ -132,6 +132,15 @@
     updateWorkspace(workspaceId, (workspace) => ({ ...workspace, activeTerminalId: terminalId }));
   }
 
+  function updateTerminalCwd(workspaceId: string, terminalId: string, cwd: string) {
+    updateWorkspace(workspaceId, (workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => (
+        terminal.id === terminalId && terminal.cwd !== cwd ? { ...terminal, cwd } : terminal
+      )),
+    }));
+  }
+
   function cycleTerminal(direction: number) {
     if (!activeWorkspace?.terminals.length) return;
     const index = activeWorkspace.terminals.findIndex((terminal) => terminal.id === activeWorkspace.activeTerminalId);
@@ -512,6 +521,7 @@
             onclose={() => closeTerminal(located.workspaceId, located.terminal.id)}
             onrename={() => { editing = { kind: 'terminal', workspaceId: located.workspaceId, terminalId: located.terminal.id, value: located.terminal.name }; }}
             ondragstart={(event) => startTerminalDrag(event, located.terminal.id, located.workspaceId)}
+            oncwdchange={(cwd) => updateTerminalCwd(located.workspaceId, located.terminal.id, cwd)}
           />
         {/each}
 
