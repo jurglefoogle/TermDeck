@@ -155,6 +155,10 @@ kbd { display: inline-flex; min-width: 20px; height: 18px; align-items: center; 
 .terminal-actions { display: flex; opacity: 0.2; transition: opacity 120ms var(--motion); }
 .terminal-pane:hover .terminal-actions, .terminal-pane.active .terminal-actions { opacity: 1; }
 .terminal-host { min-height: 0; flex: 1; padding: 7px 5px 4px 9px; }
+/* xterm mounts on this inner, unpadded box so FitAddon measures the true
+   content area. Reading the padded .terminal-host (box-sizing: border-box)
+   over-counts height by the padding and clips the last row. */
+.terminal-mount { height: 100%; }
 .terminal-host .xterm { height: 100%; }
 .terminal-host .xterm-viewport { scrollbar-color: #3c3c47 transparent; scrollbar-width: thin; }
 .preview-message { position: absolute; inset: 31px 0 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; color: #5e5e69; font: 10px "Cascadia Code", Consolas, monospace; background: repeating-linear-gradient(-45deg, #111216, #111216 12px, #131419 12px, #131419 24px); }
