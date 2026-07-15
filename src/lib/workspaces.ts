@@ -64,6 +64,7 @@ function normalizeTerminal(value: unknown, workspaceCwd: string): TerminalSessio
     cwd: typeof item.cwd === 'string' && item.cwd ? item.cwd : workspaceCwd,
     commandHistory: retainedStringLines(item.commandHistory, MAX_COMMAND_HISTORY),
     scrollback: retainedStringLines(item.scrollback, 50_000),
+    scrollbackAnsi: typeof item.scrollbackAnsi === 'string' ? item.scrollbackAnsi : undefined,
   };
 }
 

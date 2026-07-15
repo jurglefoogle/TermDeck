@@ -115,6 +115,7 @@ describe('workspace terminal movement', () => {
             cwd: '/home/dennis/project',
             commandHistory: ['pwd', 'npm test'],
             scrollback: ['PS> pwd', '/home/dennis/project'],
+            scrollbackAnsi: '\u001b[36mPS>\u001b[0m pwd',
           }],
         }]),
       };
@@ -122,6 +123,7 @@ describe('workspace terminal movement', () => {
       const terminal = loadWorkspaces(storage)[0].terminals[0];
       expect(terminal.commandHistory).toEqual(['pwd', 'npm test']);
       expect(terminal.scrollback).toEqual(['PS> pwd', '/home/dennis/project']);
+      expect(terminal.scrollbackAnsi).toBe('\u001b[36mPS>\u001b[0m pwd');
     });
   });
 });

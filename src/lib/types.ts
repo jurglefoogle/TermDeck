@@ -4,6 +4,7 @@ export type TerminalSession = {
   cwd: string;
   commandHistory?: string[];
   scrollback?: string[];
+  scrollbackAnsi?: string;
 };
 
 export type Workspace = {

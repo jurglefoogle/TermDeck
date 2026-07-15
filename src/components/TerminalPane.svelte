@@ -3,10 +3,11 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { onMount, tick } from 'svelte';
   import { FitAddon } from '@xterm/addon-fit';
+  import { SerializeAddon } from '@xterm/addon-serialize';
   import { Terminal } from '@xterm/xterm';
   import '@xterm/xterm/css/xterm.css';
   import { parseOsc7Cwd } from '../lib/terminal-cwd';
-  import { appendCommandHistory, trimRetainedLines } from '../lib/terminal-retention';
+  import { appendCommandHistory } from '../lib/terminal-retention';
   import type { PtyEvent, TerminalInfo, TerminalSession } from '../lib/types';
   import Icon from './Icon.svelte';
 
@@ -24,11 +25,12 @@
   export let retainScrollback = false;
   export let scrollbackLines = 5000;
   export let oncommandhistorychange: (history: string[]) => void;
-  export let onscrollbackchange: (lines: string[]) => void;
+  export let onscrollbackchange: (scrollbackAnsi: string) => void;
 
   let host: HTMLDivElement;
   let xterm: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
+  let serializeAddon: SerializeAddon | null = null;
   let generation = 0;
   let status: 'starting' | 'running' | 'exited' | 'preview' = 'starting';
   let shellName = 'shell';
@@ -70,12 +72,11 @@
   }
 
   function captureScrollback() {
-    if (!retainScrollback || !xterm) return;
-    const buffer = xterm.buffer.normal;
-    const lines = Array.from({ length: buffer.length }, (_, index) => (
-      buffer.getLine(index)?.translateToString(true) ?? ''
-    ));
-    onscrollbackchange(trimRetainedLines(lines, scrollbackLines));
+    if (!retainScrollback || !serializeAddon) return;
+    onscrollbackchange(serializeAddon.serialize({
+      scrollback: scrollbackLines,
+      excludeModes: true,
+    }));
   }
 
   function scheduleScrollbackCapture() {
@@ -188,21 +189,28 @@
       theme,
     });
     fitAddon = new FitAddon();
+    serializeAddon = new SerializeAddon();
     xterm.loadAddon(fitAddon);
+    xterm.loadAddon(serializeAddon);
     const cwdHandler = xterm.parser.registerOscHandler(7, (data) => {
       const cwd = parseOsc7Cwd(data);
       if (cwd) oncwdchange(cwd);
       return false;
     });
-    xterm.open(host);
-    if (retainScrollback && terminal.scrollback?.length) {
-      xterm.write(`${terminal.scrollback.join('\r\n')}\r\n`);
+    if (retainScrollback) {
+      const restoredScrollback = terminal.scrollbackAnsi ?? terminal.scrollback?.join('\r\n');
+      if (restoredScrollback) xterm.write(restoredScrollback);
     }
+    xterm.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      if (event.key === 'ArrowUp' && restoreHistory(-1)) return false;
+      if (event.key === 'ArrowDown' && restoreHistory(1)) return false;
+      return true;
+    });
+    xterm.open(host);
 
     const input = xterm.onData((data) => {
-      if (data === '\x1b[A' && restoreHistory(-1)) return;
-      if (data === '\x1b[B' && restoreHistory(1)) return;
-      recordInput(data);
+      if (!data.startsWith('\x1b')) recordInput(data);
       if (generation > 0) invoke('write_terminal', { sessionId: terminal.id, data }).catch(() => undefined);
     });
     const observer = new ResizeObserver(() => fitAndResize());
@@ -228,6 +236,7 @@
       xterm?.dispose();
       xterm = null;
       fitAddon = null;
+      serializeAddon = null;
     };
   });
 

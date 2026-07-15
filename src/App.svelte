@@ -151,12 +151,12 @@
     }));
   }
 
-  function updateTerminalScrollback(workspaceId: string, terminalId: string, scrollback: string[]) {
+  function updateTerminalScrollback(workspaceId: string, terminalId: string, scrollbackAnsi: string) {
     if (!settings.retainScrollback) return;
     updateWorkspace(workspaceId, (workspace) => ({
       ...workspace,
       terminals: workspace.terminals.map((terminal) => (
-        terminal.id === terminalId ? { ...terminal, scrollback } : terminal
+        terminal.id === terminalId ? { ...terminal, scrollback: [], scrollbackAnsi } : terminal
       )),
     }));
   }
@@ -169,7 +169,7 @@
       terminals: workspace.terminals.map((terminal) => ({
         ...terminal,
         ...(!next.retainCommandHistory ? { commandHistory: [] } : {}),
-        ...(!next.retainScrollback ? { scrollback: [] } : {}),
+        ...(!next.retainScrollback ? { scrollback: [], scrollbackAnsi: undefined } : {}),
       })),
     }));
   }
