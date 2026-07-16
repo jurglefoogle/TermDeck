@@ -3,7 +3,6 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use std::collections::HashMap;
-#[cfg(not(target_os = "windows"))]
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -14,8 +13,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, State};
 
 const MAX_TERMINAL_ID_LEN: usize = 100;
-#[cfg(target_os = "windows")]
-const MAX_NATIVE_HISTORY_BYTES: usize = 24 * 1024;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OSC52_ENCODED_BYTES: usize = 4 * 1024 * 1024;
 const OSC52_PREFIX: &[u8] = b"\x1b]52;";
@@ -156,10 +153,9 @@ struct ShellLaunch {
     init_path: Option<PathBuf>,
 }
 
+/// Removes whatever a shell launch wrote to disk: an rcfile or ZDOTDIR on unix,
+/// the PSReadLine history file on Windows.
 fn remove_shell_init(path: Option<PathBuf>) {
-    #[cfg(target_os = "windows")]
-    let _ = path;
-    #[cfg(not(target_os = "windows"))]
     if let Some(path) = path {
         let _ = if path.is_dir() {
             fs::remove_dir_all(path)
@@ -249,49 +245,17 @@ fn selected_shell() -> String {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn command_history_environment(history: Vec<String>) -> Vec<(String, String)> {
-    let mut retained = Vec::new();
-    let mut byte_count = 0;
-    for command in history.into_iter().rev() {
-        let command = command.trim();
-        if command.is_empty() || command.contains('\0') {
-            continue;
-        }
-        let next_size = byte_count + command.len() + usize::from(!retained.is_empty());
-        if next_size > MAX_NATIVE_HISTORY_BYTES {
-            break;
-        }
-        byte_count = next_size;
-        retained.push(command.to_string());
-    }
-    retained.reverse();
-    if retained.is_empty() {
-        Vec::new()
-    } else {
-        vec![(
-            "TERMDECK_COMMAND_HISTORY".to_string(),
-            BASE64.encode(retained.join("\0")),
-        )]
-    }
-}
-
-fn resolve_shell(_session_id: &str, _generation: u64, history: Vec<String>) -> Result<ShellLaunch, String> {
+fn resolve_shell(session_id: &str, generation: u64, history: Vec<String>) -> Result<ShellLaunch, String> {
     let shell = selected_shell();
 
     #[cfg(target_os = "windows")]
     {
-        Ok(ShellLaunch {
-            args: windows_shell_args(&shell),
-            shell,
-            environment: command_history_environment(history),
-            init_path: None,
-        })
+        windows_shell_launch(shell, session_id, generation, history)
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        unix_shell_launch(shell, _session_id, _generation, history)
+        unix_shell_launch(shell, session_id, generation, history)
     }
 }
 
@@ -308,22 +272,80 @@ fn find_windows_executable(name: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// PowerShell startup script.
+///
+/// Restore points PSReadLine at a history file this process writes, rather than
+/// calling AddToHistory: PSReadLine loads its history from that file when it
+/// first reads a line, which happens after this script and after the first
+/// prompt, so anything added before then is discarded. Loading from the file is
+/// also what makes native history search and inline suggestions work, and keeps
+/// the entries out of the user's global PowerShell history.
+///
+/// Capture reports each command PowerShell records. PowerShell adds this
+/// `-Command` script to its session history once the script finishes, so it is
+/// invisible here and first appears at the first prompt; the first prompt
+/// therefore adopts whatever entry is present without reporting it, otherwise
+/// this whole script would be reported back as the user's first command.
 #[cfg(target_os = "windows")]
-fn windows_shell_args(shell: &str) -> Vec<String> {
-    let executable = Path::new(shell)
+const POWERSHELL_INIT: &str = "Import-Module PSReadLine -ErrorAction SilentlyContinue; if (Get-Module PSReadLine) { Set-PSReadLineOption -HistorySavePath '__TERMDECK_HISTORY_PATH__' }; $script:termdeckHistoryId = -1; $script:termdeckPrompt = (Get-Command prompt -CommandType Function).ScriptBlock; function global:prompt { $entry = Get-History -Count 1; if ($script:termdeckHistoryId -lt 0) { $script:termdeckHistoryId = $(if ($entry) { $entry.Id } else { 0 }) } elseif ($entry -and $entry.Id -ne $script:termdeckHistoryId) { $script:termdeckHistoryId = $entry.Id; [Console]::Write(\"$([char]27)]6973;$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($entry.CommandLine)))$([char]7)\") }; $uri = [System.Uri]::new((Get-Location).Path).AbsoluteUri; [Console]::Write(\"$([char]27)]7;$uri$([char]7)\"); & $script:termdeckPrompt }";
+
+#[cfg(target_os = "windows")]
+fn windows_shell_launch(
+    shell: String,
+    session_id: &str,
+    generation: u64,
+    history: Vec<String>,
+) -> Result<ShellLaunch, String> {
+    let executable = Path::new(&shell)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if executable == "pwsh.exe" || executable == "powershell.exe" {
-        return vec![
+    if executable != "pwsh.exe" && executable != "powershell.exe" {
+        return Ok(ShellLaunch {
+            shell,
+            args: Vec::new(),
+            environment: Vec::new(),
+            init_path: None,
+        });
+    }
+
+    let history_path =
+        std::env::temp_dir().join(format!("termdeck-{session_id}-{generation}.history.txt"));
+    fs::write(&history_path, powershell_history_file(&history))
+        .map_err(|error| format!("Unable to prepare PowerShell history: {error}"))?;
+    let command = POWERSHELL_INIT.replace(
+        "__TERMDECK_HISTORY_PATH__",
+        &history_path.to_string_lossy().replace('\'', "''"),
+    );
+
+    Ok(ShellLaunch {
+        shell,
+        args: vec![
             "-NoLogo".to_string(),
             "-NoExit".to_string(),
             "-Command".to_string(),
-            "$rawHistory = $env:TERMDECK_COMMAND_HISTORY; Remove-Item Env:TERMDECK_COMMAND_HISTORY -ErrorAction SilentlyContinue; if ($rawHistory -and (Get-Module -ListAvailable -Name PSReadLine)) { Import-Module PSReadLine; foreach ($entry in [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($rawHistory)).Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)) { [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory($entry) } }; $script:termdeckHistoryId = 0; $script:termdeckPrompt = (Get-Command prompt -CommandType Function).ScriptBlock; function global:prompt { $entry = Get-History -Count 1; if ($entry -and $entry.Id -ne $script:termdeckHistoryId) { $script:termdeckHistoryId = $entry.Id; [Console]::Write(\"$([char]27)]6973;$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($entry.CommandLine)))$([char]7)\") }; $uri = [System.Uri]::new((Get-Location).Path).AbsoluteUri; [Console]::Write(\"$([char]27)]7;$uri$([char]7)\"); & $script:termdeckPrompt }".to_string(),
-        ];
-    }
-    Vec::new()
+            command,
+        ],
+        environment: Vec::new(),
+        init_path: Some(history_path),
+    })
+}
+
+/// PSReadLine's history file is one command per line, so entries that span lines
+/// cannot be represented and are dropped rather than split into fragments.
+#[cfg(target_os = "windows")]
+fn powershell_history_file(history: &[String]) -> String {
+    history
+        .iter()
+        .filter(|entry| {
+            !entry.trim().is_empty()
+                && !entry.contains('\n')
+                && !entry.contains('\r')
+                && !entry.contains('\0')
+        })
+        .map(|entry| format!("{entry}\n"))
+        .collect()
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -781,31 +803,54 @@ mod tests {
         assert!(!info.suggested_name.is_empty());
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
-    fn encodes_recent_command_history_for_shell_startup() {
-        let environment = command_history_environment(vec![
+    fn powershell_history_file_holds_one_command_per_line() {
+        let contents = powershell_history_file(&[
             "first".to_string(),
-            "".to_string(),
+            "  ".to_string(),
             "second".to_string(),
         ]);
-        assert_eq!(environment.len(), 1);
-        assert_eq!(environment[0].0, "TERMDECK_COMMAND_HISTORY");
-        assert_eq!(
-            BASE64.decode(&environment[0].1).expect("decode history"),
-            b"first\0second"
-        );
+        assert_eq!(contents, "first\nsecond\n");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_history_file_drops_entries_it_cannot_represent() {
+        let contents = powershell_history_file(&[
+            "keep me".to_string(),
+            "spans\nlines".to_string(),
+            "has\0nul".to_string(),
+        ]);
+        assert_eq!(contents, "keep me\n");
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn powershell_shell_args_include_pwd_bootstrap() {
-        let args = windows_shell_args("C:\\Program Files\\PowerShell\\7\\pwsh.exe");
-        assert_eq!(args[0], "-NoLogo");
-        assert_eq!(args[1], "-NoExit");
-        assert_eq!(args[2], "-Command");
-        assert!(args[3].contains("function global:prompt"));
-        assert!(args[3].contains("]7;"));
-        assert!(args[3].contains("Set-PSReadLineKeyHandler"));
+        let launch = windows_shell_launch(
+            "C:\\Program Files\\PowerShell\\7\\pwsh.exe".to_string(),
+            "term_test",
+            1,
+            vec!["ls ~/Downloads".to_string()],
+        )
+        .expect("build PowerShell launch");
+        assert_eq!(launch.args[0], "-NoLogo");
+        assert_eq!(launch.args[1], "-NoExit");
+        assert_eq!(launch.args[2], "-Command");
+        assert!(launch.args[3].contains("function global:prompt"));
+        assert!(launch.args[3].contains("]7;"));
+        // Restore must go through PSReadLine's own history file: rebinding the
+        // arrow keys shadows the native bindings that accept a suggestion.
+        assert!(launch.args[3].contains("Set-PSReadLineOption -HistorySavePath"));
+        assert!(!launch.args[3].contains("Set-PSReadLineKeyHandler"));
+
+        let history_path = launch.init_path.expect("history file written");
+        assert_eq!(
+            fs::read_to_string(&history_path).expect("read history file"),
+            "ls ~/Downloads\n"
+        );
+        let _ = fs::remove_file(history_path);
     }
 
     #[cfg(target_os = "windows")]
@@ -820,12 +865,10 @@ mod tests {
             })
             .expect("create PTY");
         let shell = selected_shell();
+        let launch = resolve_shell("term_history_test", 1, vec!["ls ~/Downloads".to_string()])
+            .expect("build PowerShell launch");
         let mut command = CommandBuilder::new(&shell);
-        command.args(windows_shell_args(&shell));
-        command.env(
-            "TERMDECK_COMMAND_HISTORY",
-            BASE64.encode("ls ~/Downloads"),
-        );
+        command.args(launch.args.clone());
         command.env("TERM", "xterm-256color");
         command.cwd(home_directory());
 
@@ -879,6 +922,7 @@ mod tests {
         while let Ok(chunk) = output_receiver.recv_timeout(std::time::Duration::from_millis(100)) {
             output.push_str(&chunk);
         }
+        remove_shell_init(launch.init_path);
         assert!(
             output.contains("ls ") && output.contains("~/Downloads"),
             "PowerShell did not restore the full command. Output: {output:?}"
@@ -888,8 +932,10 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn non_powershell_shell_uses_no_bootstrap_args() {
-        let args = windows_shell_args("C:\\tools\\bash.exe");
-        assert!(args.is_empty());
+        let launch = windows_shell_launch("C:\\tools\\bash.exe".to_string(), "term_test", 1, Vec::new())
+            .expect("build launch");
+        assert!(launch.args.is_empty());
+        assert!(launch.init_path.is_none());
     }
 
     #[cfg(target_os = "windows")]
