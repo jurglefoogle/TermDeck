@@ -320,7 +320,7 @@ fn windows_shell_args(shell: &str) -> Vec<String> {
             "-NoLogo".to_string(),
             "-NoExit".to_string(),
             "-Command".to_string(),
-            "$rawHistory = $env:TERMDECK_COMMAND_HISTORY; Remove-Item Env:TERMDECK_COMMAND_HISTORY -ErrorAction SilentlyContinue; if ($rawHistory -and (Get-Module -ListAvailable -Name PSReadLine)) { Import-Module PSReadLine; $global:termdeckHistory = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($rawHistory)).Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)); if ($global:termdeckHistory.Count) { $global:termdeckHistoryIndex = $global:termdeckHistory.Count; $global:termdeckHistoryDraft = ''; Set-PSReadLineKeyHandler -Key UpArrow -ScriptBlock { $line = ''; $cursor = 0; [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor); if ($global:termdeckHistoryIndex -eq $global:termdeckHistory.Count) { $global:termdeckHistoryDraft = $line }; if ($global:termdeckHistoryIndex -gt 0) { $global:termdeckHistoryIndex--; [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $global:termdeckHistory[$global:termdeckHistoryIndex], $null, $null) } }; Set-PSReadLineKeyHandler -Key DownArrow -ScriptBlock { $line = ''; $cursor = 0; [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor); if ($global:termdeckHistoryIndex -lt ($global:termdeckHistory.Count - 1)) { $global:termdeckHistoryIndex++; $replacement = $global:termdeckHistory[$global:termdeckHistoryIndex] } else { $global:termdeckHistoryIndex = $global:termdeckHistory.Count; $replacement = $global:termdeckHistoryDraft }; [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $replacement, $null, $null) } } }; $script:termdeckPrompt = (Get-Command prompt -CommandType Function).ScriptBlock; function global:prompt { $uri = [System.Uri]::new((Get-Location).Path).AbsoluteUri; [Console]::Write(\"$([char]27)]7;$uri$([char]7)\"); & $script:termdeckPrompt }".to_string(),
+            "$rawHistory = $env:TERMDECK_COMMAND_HISTORY; Remove-Item Env:TERMDECK_COMMAND_HISTORY -ErrorAction SilentlyContinue; if ($rawHistory -and (Get-Module -ListAvailable -Name PSReadLine)) { Import-Module PSReadLine; foreach ($entry in [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($rawHistory)).Split([char]0, [StringSplitOptions]::RemoveEmptyEntries)) { [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory($entry) } }; $script:termdeckHistoryId = 0; $script:termdeckPrompt = (Get-Command prompt -CommandType Function).ScriptBlock; function global:prompt { $entry = Get-History -Count 1; if ($entry -and $entry.Id -ne $script:termdeckHistoryId) { $script:termdeckHistoryId = $entry.Id; [Console]::Write(\"$([char]27)]6973;$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($entry.CommandLine)))$([char]7)\") }; $uri = [System.Uri]::new((Get-Location).Path).AbsoluteUri; [Console]::Write(\"$([char]27)]7;$uri$([char]7)\"); & $script:termdeckPrompt }".to_string(),
         ];
     }
     Vec::new()
@@ -341,7 +341,24 @@ fn unix_shell_launch(shell: String, session_id: &str, generation: u64, history: 
             "if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n{}",
             unix_history_setup(&history, "history -s "),
         ) + r#"__termdeck_emit_cwd() { printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$(pwd -P)"; }
-PROMPT_COMMAND="__termdeck_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+__termdeck_last_history=
+__termdeck_read_history() {
+  local line
+  line=$(HISTTIMEFORMAT= builtin history 1) || return 1
+  [[ $line =~ ^[[:space:]]*([0-9]+)[[:space:]]+(.*)$ ]] || return 1
+  __termdeck_history_id=${BASH_REMATCH[1]}
+  __termdeck_history_command=${BASH_REMATCH[2]}
+}
+__termdeck_emit_history() {
+  __termdeck_read_history || return
+  [ "$__termdeck_history_id" = "$__termdeck_last_history" ] && return
+  __termdeck_last_history=$__termdeck_history_id
+  printf '\033]6973;%s\007' "$(printf '%s' "$__termdeck_history_command" | base64 | tr -d '\n')"
+}
+# Seeded entries are already known to the app; start from the current entry so
+# the first prompt does not report them back as newly run commands.
+__termdeck_read_history && __termdeck_last_history=$__termdeck_history_id
+PROMPT_COMMAND="__termdeck_emit_cwd;__termdeck_emit_history${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 "#;
         fs::write(
             &init_path,
@@ -364,6 +381,8 @@ PROMPT_COMMAND="__termdeck_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
             unix_history_setup(&history, "print -s -- "),
         ) + r#"function __termdeck_emit_cwd() { print -n -- "\e]7;file://${HOSTNAME:-localhost}${PWD}\a"; }
 precmd_functions+=(__termdeck_emit_cwd)
+function __termdeck_emit_history() { print -n -- "\e]6973;$(printf '%s' "$1" | base64 | tr -d '\n')\a"; }
+preexec_functions+=(__termdeck_emit_history)
 "#;
         fs::write(
             &init_path,

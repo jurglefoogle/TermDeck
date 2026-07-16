@@ -7,7 +7,7 @@
   import { Terminal } from '@xterm/xterm';
   import '@xterm/xterm/css/xterm.css';
   import { parseOsc7Cwd } from '../lib/terminal-cwd';
-  import { appendCommandHistory } from '../lib/terminal-retention';
+  import { COMMAND_REPORT_OSC, appendCommandHistory, parseCommandReport } from '../lib/terminal-retention';
   import type { PtyEvent, TerminalInfo, TerminalSession } from '../lib/types';
   import Icon from './Icon.svelte';
 
@@ -35,7 +35,6 @@
   let status: 'starting' | 'running' | 'exited' | 'preview' = 'starting';
   let shellName = 'shell';
   let pendingEvents: PtyEvent[] = [];
-  let currentCommand = '';
   let retainedHistory = terminal.commandHistory ?? [];
   let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -86,25 +85,12 @@
     }, 200);
   }
 
-  function recordInput(data: string) {
-    for (const character of data) {
-      if (character === '\r' || character === '\n') {
-        if (retainCommandHistory) {
-          const history = appendCommandHistory(retainedHistory, currentCommand);
-          if (history.length !== retainedHistory.length || history.at(-1) !== retainedHistory.at(-1)) {
-            retainedHistory = history;
-            oncommandhistorychange(history);
-          }
-        }
-        currentCommand = '';
-        continue;
-      }
-      if (character === '\x7f' || character === '\b') {
-        currentCommand = currentCommand.slice(0, -1);
-        continue;
-      }
-      if (character >= ' ') currentCommand += character;
-    }
+  function recordCommand(command: string) {
+    if (!retainCommandHistory) return;
+    const history = appendCommandHistory(retainedHistory, command);
+    if (history.length === retainedHistory.length && history.at(-1) === retainedHistory.at(-1)) return;
+    retainedHistory = history;
+    oncommandhistorychange(history);
   }
 
   async function fitAndResize() {
@@ -179,6 +165,11 @@
       if (cwd) oncwdchange(cwd);
       return false;
     });
+    const historyHandler = xterm.parser.registerOscHandler(COMMAND_REPORT_OSC, (data) => {
+      const command = parseCommandReport(data);
+      if (command) recordCommand(command);
+      return true;
+    });
     if (retainScrollback) {
       const restoredScrollback = terminal.scrollbackAnsi ?? terminal.scrollback?.join('\r\n');
       if (restoredScrollback) xterm.write(restoredScrollback);
@@ -186,7 +177,6 @@
     xterm.open(host);
 
     const input = xterm.onData((data) => {
-      if (!data.startsWith('\x1b')) recordInput(data);
       if (generation > 0) invoke('write_terminal', { sessionId: terminal.id, data }).catch(() => undefined);
     });
     const observer = new ResizeObserver(() => fitAndResize());
@@ -207,6 +197,7 @@
       observer.disconnect();
       input.dispose();
       cwdHandler.dispose();
+      historyHandler.dispose();
       unlisten?.();
       xterm?.dispose();
       xterm = null;

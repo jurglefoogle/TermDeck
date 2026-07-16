@@ -22,9 +22,11 @@
     loadWorkspaces,
     normalizeSplitRatiosForRows,
     moveTerminal as moveTerminalConfig,
+    purgeCapturedCommandHistory,
     STORAGE_KEY,
   } from './lib/workspaces';
 
+  purgeCapturedCommandHistory();
   let workspaces: Workspace[] = loadWorkspaces();
   const storedWorkspaceId = localStorage.getItem(ACTIVE_WORKSPACE_KEY);
   let activeWorkspaceId = workspaces.some((workspace) => workspace.id === storedWorkspaceId)

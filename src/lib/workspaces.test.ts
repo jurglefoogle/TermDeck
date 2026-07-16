@@ -5,11 +5,23 @@ import {
   computeTileLayout,
   computeTileStyles,
   distributeRows,
+  HISTORY_PURGE_KEY,
   loadWorkspaces,
   moveTerminal,
   normalizeSplitRatiosForRows,
+  purgeCapturedCommandHistory,
+  STORAGE_KEY,
 } from './workspaces';
 import type { Workspace } from './types';
+
+function fakeStorage(entries: Record<string, string> = {}) {
+  const data = new Map(Object.entries(entries));
+  return {
+    data,
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => void data.set(key, value),
+  };
+}
 
 describe('automatic terminal layout', () => {
   it.each([
@@ -125,5 +137,51 @@ describe('workspace terminal movement', () => {
       expect(terminal.scrollback).toEqual(['PS> pwd', '/home/dennis/project']);
       expect(terminal.scrollbackAnsi).toBe('\u001b[36mPS>\u001b[0m pwd');
     });
+  });
+});
+
+describe('purging history captured by keystroke sniffing', () => {
+  const stored = (history: string[]) => JSON.stringify([{
+    id: 'workspace_1',
+    name: 'Workspace',
+    cwd: '/home/dennis',
+    terminals: [{ id: 'term_1', name: 'Terminal 1', cwd: '/home/dennis', commandHistory: history }],
+    activeTerminalId: 'term_1',
+  }]);
+
+  it('drops history a previous build may have captured from a password prompt', () => {
+    const storage = fakeStorage({ [STORAGE_KEY]: stored(['ssh dennis@host', 'hunter2']) });
+
+    expect(purgeCapturedCommandHistory(storage)).toBe(true);
+
+    expect(storage.getItem(STORAGE_KEY)).not.toContain('hunter2');
+    expect(loadWorkspaces(storage)[0].terminals[0].commandHistory).toEqual([]);
+    expect(storage.getItem(HISTORY_PURGE_KEY)).toBe('1');
+  });
+
+  it('preserves everything except the command history', () => {
+    const storage = fakeStorage({ [STORAGE_KEY]: stored(['secret']) });
+
+    purgeCapturedCommandHistory(storage);
+
+    const workspace = loadWorkspaces(storage)[0];
+    expect(workspace.name).toBe('Workspace');
+    expect(workspace.terminals[0].cwd).toBe('/home/dennis');
+  });
+
+  it('only purges once so history recorded afterwards survives', () => {
+    const storage = fakeStorage({ [STORAGE_KEY]: stored(['hunter2']) });
+    purgeCapturedCommandHistory(storage);
+
+    storage.setItem(STORAGE_KEY, stored(['ls -la']));
+    expect(purgeCapturedCommandHistory(storage)).toBe(false);
+
+    expect(loadWorkspaces(storage)[0].terminals[0].commandHistory).toEqual(['ls -la']);
+  });
+
+  it('marks itself done even when nothing is stored yet', () => {
+    const storage = fakeStorage();
+    expect(purgeCapturedCommandHistory(storage)).toBe(true);
+    expect(storage.getItem(HISTORY_PURGE_KEY)).toBe('1');
   });
 });
