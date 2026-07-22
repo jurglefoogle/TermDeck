@@ -242,7 +242,9 @@
       <button class="icon-button danger" title="Close terminal" on:click|stopPropagation={onclose}><Icon name="close" size={14} /></button>
     </div>
   </header>
-  <div class="terminal-host" bind:this={host}></div>
+  <div class="terminal-host">
+    <div class="terminal-mount" bind:this={host}></div>
+  </div>
   {#if status === 'preview'}
     <div class="preview-message"><Icon name="terminal" size={22} /><span>Native PTY active in the desktop build</span></div>
   {/if}
