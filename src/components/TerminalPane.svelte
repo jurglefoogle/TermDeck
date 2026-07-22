@@ -3,8 +3,11 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { onMount, tick } from 'svelte';
   import { FitAddon } from '@xterm/addon-fit';
+  import { SerializeAddon } from '@xterm/addon-serialize';
   import { Terminal } from '@xterm/xterm';
   import '@xterm/xterm/css/xterm.css';
+  import { parseOsc7Cwd } from '../lib/terminal-cwd';
+  import { COMMAND_REPORT_OSC, appendCommandHistory, parseCommandReport } from '../lib/terminal-retention';
   import type { PtyEvent, TerminalInfo, TerminalSession } from '../lib/types';
   import Icon from './Icon.svelte';
 
@@ -17,14 +20,23 @@
   export let onclose: () => void;
   export let onrename: () => void;
   export let ondragstart: (event: DragEvent) => void;
+  export let oncwdchange: (cwd: string) => void;
+  export let retainCommandHistory = false;
+  export let retainScrollback = false;
+  export let scrollbackLines = 5000;
+  export let oncommandhistorychange: (history: string[]) => void;
+  export let onscrollbackchange: (scrollbackAnsi: string) => void;
 
   let host: HTMLDivElement;
   let xterm: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
+  let serializeAddon: SerializeAddon | null = null;
   let generation = 0;
   let status: 'starting' | 'running' | 'exited' | 'preview' = 'starting';
   let shellName = 'shell';
   let pendingEvents: PtyEvent[] = [];
+  let retainedHistory = terminal.commandHistory ?? [];
+  let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   const theme = {
     background: '#111216', foreground: '#d8d8de', cursor: '#8ea4ff', cursorAccent: '#111216',
@@ -47,13 +59,38 @@
     }
     if (event.generation !== generation || !xterm) return;
     if (event.kind === 'output' && event.data) {
-      xterm.write(decodeBase64(event.data));
+      xterm.write(decodeBase64(event.data), scheduleScrollbackCapture);
     } else if (event.kind === 'exit') {
       status = 'exited';
       xterm.writeln(`\r\n\x1b[90m[process exited${event.exitCode !== undefined ? ` with code ${event.exitCode}` : ''}]\x1b[0m`);
     } else if (event.kind === 'error') {
       xterm.writeln(`\r\n\x1b[31m[PTY error: ${event.message ?? 'unknown error'}]\x1b[0m`);
     }
+  }
+
+  function captureScrollback() {
+    if (!retainScrollback || !serializeAddon) return;
+    onscrollbackchange(serializeAddon.serialize({
+      scrollback: scrollbackLines,
+      excludeModes: true,
+    }));
+  }
+
+  function scheduleScrollbackCapture() {
+    if (!retainScrollback) return;
+    if (scrollbackTimer) clearTimeout(scrollbackTimer);
+    scrollbackTimer = setTimeout(() => {
+      scrollbackTimer = null;
+      captureScrollback();
+    }, 200);
+  }
+
+  function recordCommand(command: string) {
+    if (!retainCommandHistory) return;
+    const history = appendCommandHistory(retainedHistory, command);
+    if (history.length === retainedHistory.length && history.at(-1) === retainedHistory.at(-1)) return;
+    retainedHistory = history;
+    oncommandhistorychange(history);
   }
 
   async function fitAndResize() {
@@ -79,6 +116,7 @@
       const info = await invoke<TerminalInfo>('spawn_terminal', {
         sessionId: terminal.id,
         cwd: terminal.cwd,
+        history: retainCommandHistory ? terminal.commandHistory ?? [] : [],
         cols: xterm.cols,
         rows: xterm.rows,
       });
@@ -115,11 +153,27 @@
       fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
       fontSize: 13,
       lineHeight: 1.18,
-      scrollback: 6000,
+      scrollback: scrollbackLines,
       theme,
     });
     fitAddon = new FitAddon();
+    serializeAddon = new SerializeAddon();
     xterm.loadAddon(fitAddon);
+    xterm.loadAddon(serializeAddon);
+    const cwdHandler = xterm.parser.registerOscHandler(7, (data) => {
+      const cwd = parseOsc7Cwd(data);
+      if (cwd) oncwdchange(cwd);
+      return false;
+    });
+    const historyHandler = xterm.parser.registerOscHandler(COMMAND_REPORT_OSC, (data) => {
+      const command = parseCommandReport(data);
+      if (command) recordCommand(command);
+      return true;
+    });
+    if (retainScrollback) {
+      const restoredScrollback = terminal.scrollbackAnsi ?? terminal.scrollback?.join('\r\n');
+      if (restoredScrollback) xterm.write(restoredScrollback);
+    }
     xterm.open(host);
 
     const input = xterm.onData((data) => {
@@ -139,12 +193,16 @@
 
     return () => {
       destroyed = true;
+      if (scrollbackTimer) clearTimeout(scrollbackTimer);
       observer.disconnect();
       input.dispose();
+      cwdHandler.dispose();
+      historyHandler.dispose();
       unlisten?.();
       xterm?.dispose();
       xterm = null;
       fitAddon = null;
+      serializeAddon = null;
     };
   });
 
@@ -154,6 +212,8 @@
   $: if (visible && active && xterm) {
     tick().then(() => xterm?.focus());
   }
+  $: retainedHistory = terminal.commandHistory ?? [];
+  $: if (xterm) xterm.options.scrollback = scrollbackLines;
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

@@ -1,8 +1,10 @@
 import type { TerminalSession, Workspace } from './types';
+import { MAX_COMMAND_HISTORY, retainedStringLines } from './terminal-retention';
 
 export const STORAGE_KEY = 'termdeck.workspaces.v2';
 export const LEGACY_STORAGE_KEY = 'termdeck.workspaces.v1';
 export const ACTIVE_WORKSPACE_KEY = 'termdeck.active-workspace.v2';
+export const HISTORY_PURGE_KEY = 'termdeck.history-purge.v1';
 export const MIN_SPLIT_RATIO = 0.2;
 export const MAX_SPLIT_RATIO = 0.8;
 export const DEFAULT_SPLIT_RATIO = 0.5;
@@ -61,6 +63,9 @@ function normalizeTerminal(value: unknown, workspaceCwd: string): TerminalSessio
     id: item.id,
     name: item.name.trim() || 'Terminal',
     cwd: typeof item.cwd === 'string' && item.cwd ? item.cwd : workspaceCwd,
+    commandHistory: retainedStringLines(item.commandHistory, MAX_COMMAND_HISTORY),
+    scrollback: retainedStringLines(item.scrollback, 50_000),
+    scrollbackAnsi: typeof item.scrollbackAnsi === 'string' ? item.scrollbackAnsi : undefined,
   };
 }
 
@@ -87,6 +92,38 @@ function normalizeWorkspace(value: unknown): Workspace | null {
       : terminals[0]?.id ?? null,
     splitRatios,
   };
+}
+
+/**
+ * Earlier builds captured command history by sniffing keystrokes, so anything
+ * typed at a child process's password prompt could be stored verbatim. Drop any
+ * history written by those builds once, before it is read back or re-seeded
+ * into a shell. Runs before loadWorkspaces.
+ */
+export function purgeCapturedCommandHistory(
+  storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage,
+): boolean {
+  if (storage.getItem(HISTORY_PURGE_KEY)) return false;
+  try {
+    const raw = storage.getItem(STORAGE_KEY) ?? storage.getItem(LEGACY_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const workspace of parsed) {
+          const terminals = workspace?.terminals;
+          if (!Array.isArray(terminals)) continue;
+          for (const terminal of terminals) {
+            if (terminal && typeof terminal === 'object') delete terminal.commandHistory;
+          }
+        }
+        storage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+      }
+    }
+  } catch {
+    // A malformed payload has nothing worth preserving; fall through and mark done.
+  }
+  storage.setItem(HISTORY_PURGE_KEY, '1');
+  return true;
 }
 
 export function loadWorkspaces(storage: Pick<Storage, 'getItem'> = localStorage): Workspace[] {

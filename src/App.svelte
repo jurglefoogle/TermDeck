@@ -6,9 +6,11 @@
   import DockDialog from './components/DockDialog.svelte';
   import Icon from './components/Icon.svelte';
   import NameDialog from './components/NameDialog.svelte';
+  import SettingsDialog from './components/SettingsDialog.svelte';
   import ShortcutOverlay from './components/ShortcutOverlay.svelte';
   import TerminalPane from './components/TerminalPane.svelte';
   import type { DockPathInfo, EditTarget, EnvironmentInfo, LocatedTerminal, Workspace } from './lib/types';
+  import { SETTINGS_STORAGE_KEY, loadSettings, type AppSettings } from './lib/settings';
   import {
     adjustRowSplitRatios,
     ACTIVE_WORKSPACE_KEY,
@@ -20,9 +22,11 @@
     loadWorkspaces,
     normalizeSplitRatiosForRows,
     moveTerminal as moveTerminalConfig,
+    purgeCapturedCommandHistory,
     STORAGE_KEY,
   } from './lib/workspaces';
 
+  purgeCapturedCommandHistory();
   let workspaces: Workspace[] = loadWorkspaces();
   const storedWorkspaceId = localStorage.getItem(ACTIVE_WORKSPACE_KEY);
   let activeWorkspaceId = workspaces.some((workspace) => workspace.id === storedWorkspaceId)
@@ -36,6 +40,8 @@
   let workspaceMenu: string | null = null;
   let showShortcuts = false;
   let showDockDialog = false;
+  let showSettings = false;
+  let settings: AppSettings = loadSettings();
   let draggedTerminal: { terminalId: string; sourceWorkspaceId: string } | null = null;
   let dragOverWorkspaceId: string | null = null;
   let externalDropActive = false;
@@ -65,6 +71,7 @@
   })));
   $: localStorage.setItem(STORAGE_KEY, JSON.stringify(workspaces));
   $: localStorage.setItem(ACTIVE_WORKSPACE_KEY, activeWorkspaceId);
+  $: localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   $: if (resizingSplit && splitHandles.length === 0) stopSplitResize();
 
   function notify(title: string, message: string) {
@@ -125,6 +132,48 @@
   function activateTerminal(workspaceId: string, terminalId: string) {
     activeWorkspaceId = workspaceId;
     updateWorkspace(workspaceId, (workspace) => ({ ...workspace, activeTerminalId: terminalId }));
+  }
+
+  function updateTerminalCwd(workspaceId: string, terminalId: string, cwd: string) {
+    updateWorkspace(workspaceId, (workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => (
+        terminal.id === terminalId && terminal.cwd !== cwd ? { ...terminal, cwd } : terminal
+      )),
+    }));
+  }
+
+  function updateTerminalCommandHistory(workspaceId: string, terminalId: string, commandHistory: string[]) {
+    if (!settings.retainCommandHistory) return;
+    updateWorkspace(workspaceId, (workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => (
+        terminal.id === terminalId ? { ...terminal, commandHistory } : terminal
+      )),
+    }));
+  }
+
+  function updateTerminalScrollback(workspaceId: string, terminalId: string, scrollbackAnsi: string) {
+    if (!settings.retainScrollback) return;
+    updateWorkspace(workspaceId, (workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => (
+        terminal.id === terminalId ? { ...terminal, scrollback: [], scrollbackAnsi } : terminal
+      )),
+    }));
+  }
+
+  function updateSettings(next: AppSettings) {
+    settings = next;
+    if (next.retainCommandHistory && next.retainScrollback) return;
+    workspaces = workspaces.map((workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => ({
+        ...terminal,
+        ...(!next.retainCommandHistory ? { commandHistory: [] } : {}),
+        ...(!next.retainScrollback ? { scrollback: [], scrollbackAnsi: undefined } : {}),
+      })),
+    }));
   }
 
   function cycleTerminal(direction: number) {
@@ -314,8 +363,8 @@
   }
 
   function handleKeyboard(event: KeyboardEvent) {
-    if (editing || showDockDialog) {
-      if (event.key === 'Escape') { editing = null; showDockDialog = false; }
+    if (editing || showDockDialog || showSettings) {
+      if (event.key === 'Escape') { editing = null; showDockDialog = false; showSettings = false; }
       return;
     }
     if (showShortcuts && event.key === 'Escape') { showShortcuts = false; return; }
@@ -453,6 +502,7 @@
       <div class="sidebar-tools">
         <button on:click={() => { showDockDialog = true; }}><Icon name="dock" /><span><strong>Dock external</strong><small>Drop a location</small></span></button>
         <button on:click={() => { showShortcuts = true; }}><Icon name="keyboard" /><span><strong>Shortcuts</strong><small>Ctrl + /</small></span></button>
+        <button on:click={() => { showSettings = true; }}><Icon name="settings" /><span><strong>Settings</strong><small>Terminal preferences</small></span></button>
       </div>
       <div class="sidebar-footer">
         <span><i></i> RUST PTY</span><span>{platform.toUpperCase()} · {shell.split(/[\\/]/).pop()}</span>
@@ -506,6 +556,12 @@
             onclose={() => closeTerminal(located.workspaceId, located.terminal.id)}
             onrename={() => { editing = { kind: 'terminal', workspaceId: located.workspaceId, terminalId: located.terminal.id, value: located.terminal.name }; }}
             ondragstart={(event) => startTerminalDrag(event, located.terminal.id, located.workspaceId)}
+            oncwdchange={(cwd) => updateTerminalCwd(located.workspaceId, located.terminal.id, cwd)}
+            retainCommandHistory={settings.retainCommandHistory}
+            retainScrollback={settings.retainScrollback}
+            scrollbackLines={settings.scrollbackLines}
+            oncommandhistorychange={(commandHistory) => updateTerminalCommandHistory(located.workspaceId, located.terminal.id, commandHistory)}
+            onscrollbackchange={(scrollback) => updateTerminalScrollback(located.workspaceId, located.terminal.id, scrollback)}
           />
         {/each}
 
@@ -539,6 +595,7 @@
 {/if}
 {#if showShortcuts}<ShortcutOverlay onclose={() => { showShortcuts = false; }} />{/if}
 {#if showDockDialog}<DockDialog onclose={() => { showDockDialog = false; }} onpick={pickDockLocation} />{/if}
+{#if showSettings}<SettingsDialog {settings} onchange={updateSettings} onclose={() => { showSettings = false; }} />{/if}
 {#if toast}
   <div class="toast"><div class="toast-icon"><Icon name="spark" /></div><div><strong>{toast.title}</strong><span>{toast.message}</span></div><button aria-label="Dismiss notification" on:click={() => { toast = null; }}><Icon name="close" size={14} /></button></div>
 {/if}
