@@ -1,5 +1,5 @@
 <script lang="ts">
-  export let name: 'terminal' | 'plus' | 'folder' | 'edit' | 'close' | 'more' | 'grid' | 'restart' | 'chevron' | 'dock' | 'keyboard' | 'settings' | 'arrow-left' | 'arrow-right' | 'spark' = 'terminal';
+  export let name: 'terminal' | 'plus' | 'folder' | 'edit' | 'close' | 'more' | 'grid' | 'restart' | 'chevron' | 'dock' | 'keyboard' | 'settings' | 'arrow-left' | 'arrow-right' | 'spark' | 'refresh' | 'microphone' = 'terminal';
   export let size = 16;
 </script>
 
@@ -35,5 +35,9 @@
     <path d="m10 6 6 6-6 6" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
   {:else if name === 'spark'}
     <path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.5" />
+  {:else if name === 'refresh'}
+    <path d="M19 8V4m0 0h-4m4 0-3.2 3.2a7 7 0 1 0 1.7 7.1" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" />
+  {:else if name === 'microphone'}
+    <rect x="8" y="3" width="8" height="12" rx="4" stroke="currentColor" stroke-width="1.7" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3m-3 0h6" stroke="currentColor" stroke-linecap="round" stroke-width="1.7" />
   {/if}
 </svg>

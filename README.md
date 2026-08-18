@@ -9,7 +9,13 @@ TermDeck is a cross-platform terminal workspace for Windows and Linux, rebuilt w
 - Automatically tiles terminal panes to fill the available stage
 - Lets you drag pane dividers to resize side-by-side terminals independently within each row
 - Moves a running terminal between workspaces by dragging its tab or pane header
+- Reorders terminals within a workspace by dragging tabs or pane headers
 - Moves the focused terminal with `Ctrl+Shift+Left/Right`
+- Collapses the workspace sidebar and adjusts terminal font size from Settings
+- Browses the active workspace folder in a docked file browser
+- Gives each terminal its own automatically generated Copilot CLI session and resumes it when that terminal restarts
+- Saves an optional startup command per terminal and runs it after the shell launches
+- Dictates one Windows speech utterance into the selected terminal without submitting it
 - Docks folders and files dropped from Explorer or a Linux file manager
 - Persists workspace, terminal, and project-folder metadata
 - Runs PowerShell on Windows and `$SHELL`/bash on Linux through `portable-pty`

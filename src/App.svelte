@@ -4,9 +4,11 @@
   import { getCurrentWebview } from '@tauri-apps/api/webview';
   import { onMount } from 'svelte';
   import DockDialog from './components/DockDialog.svelte';
+  import FileBrowser from './components/FileBrowser.svelte';
   import Icon from './components/Icon.svelte';
   import NameDialog from './components/NameDialog.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
+  import StartupCommandDialog from './components/StartupCommandDialog.svelte';
   import ShortcutOverlay from './components/ShortcutOverlay.svelte';
   import TerminalPane from './components/TerminalPane.svelte';
   import type { DockPathInfo, EditTarget, EnvironmentInfo, LocatedTerminal, Workspace } from './lib/types';
@@ -22,6 +24,7 @@
     loadWorkspaces,
     normalizeSplitRatiosForRows,
     moveTerminal as moveTerminalConfig,
+    reorderTerminal as reorderTerminalConfig,
     purgeCapturedCommandHistory,
     STORAGE_KEY,
   } from './lib/workspaces';
@@ -41,6 +44,9 @@
   let showShortcuts = false;
   let showDockDialog = false;
   let showSettings = false;
+  let showFileBrowser = false;
+  let startupEditing: { workspaceId: string; terminalId: string } | null = null;
+  let speechActive = false;
   let settings: AppSettings = loadSettings();
   let draggedTerminal: { terminalId: string; sourceWorkspaceId: string } | null = null;
   let dragOverWorkspaceId: string | null = null;
@@ -141,6 +147,29 @@
         terminal.id === terminalId && terminal.cwd !== cwd ? { ...terminal, cwd } : terminal
       )),
     }));
+  }
+
+  function updateTerminalCopilot(workspaceId: string, terminalId: string) {
+    updateWorkspace(workspaceId, (workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => (
+        terminal.id === terminalId ? { ...terminal, copilotActive: true } : terminal
+      )),
+    }));
+  }
+
+  function updateTerminalStartupCommand(value: string) {
+    if (!startupEditing) return;
+    const { workspaceId, terminalId } = startupEditing;
+    updateWorkspace(workspaceId, (workspace) => ({
+      ...workspace,
+      terminals: workspace.terminals.map((terminal) => (
+        terminal.id === terminalId
+          ? { ...terminal, startupCommand: value || undefined }
+          : terminal
+      )),
+    }));
+    startupEditing = null;
   }
 
   function updateTerminalCommandHistory(workspaceId: string, terminalId: string, commandHistory: string[]) {
@@ -305,6 +334,22 @@
     dragOverWorkspaceId = null;
   }
 
+  function dropTerminalOnTerminal(event: DragEvent, targetWorkspaceId: string, targetIndex: number) {
+    event.preventDefault();
+    event.stopPropagation();
+    const payload = draggedTerminal;
+    if (!payload) return;
+    if (payload.sourceWorkspaceId === targetWorkspaceId) {
+      workspaces = reorderTerminalConfig(workspaces, targetWorkspaceId, payload.terminalId, targetIndex);
+      activeWorkspaceId = targetWorkspaceId;
+    } else {
+      moveTerminal(payload.terminalId, payload.sourceWorkspaceId, targetWorkspaceId);
+      workspaces = reorderTerminalConfig(workspaces, targetWorkspaceId, payload.terminalId, targetIndex);
+    }
+    draggedTerminal = null;
+    dragOverWorkspaceId = null;
+  }
+
   function saveName(value: string) {
     if (!editing) return;
     if (editing.kind === 'workspace') {
@@ -362,9 +407,25 @@
     if (terminal) editing = { kind: 'terminal', workspaceId: activeWorkspace.id, terminalId: terminal.id, value: terminal.name };
   }
 
+  async function transcribeIntoActiveTerminal() {
+    const terminalId = activeWorkspace.activeTerminalId;
+    if (!terminalId || speechActive) return;
+    speechActive = true;
+    try {
+      const transcript = (await invoke<string>('transcribe_speech')).trim();
+      if (transcript) {
+        await invoke('write_terminal', { sessionId: terminalId, data: transcript });
+      }
+    } catch (error) {
+      notify('Speech input unavailable', String(error));
+    } finally {
+      speechActive = false;
+    }
+  }
+
   function handleKeyboard(event: KeyboardEvent) {
-    if (editing || showDockDialog || showSettings) {
-      if (event.key === 'Escape') { editing = null; showDockDialog = false; showSettings = false; }
+    if (editing || startupEditing || showDockDialog || showSettings) {
+      if (event.key === 'Escape') { editing = null; startupEditing = null; showDockDialog = false; showSettings = false; }
       return;
     }
     if (showShortcuts && event.key === 'Escape') { showShortcuts = false; return; }
@@ -390,6 +451,8 @@
       if (activeWorkspace.activeTerminalId) closeTerminal(activeWorkspace.id, activeWorkspace.activeTerminalId);
     } else if (event.key === 'F2') {
       event.preventDefault(); renameActiveTerminal();
+    } else if (event.ctrlKey && event.shiftKey && event.code === 'Space') {
+      event.preventDefault(); transcribeIntoActiveTerminal();
     } else if (event.ctrlKey && event.key === '/') {
       event.preventDefault(); showShortcuts = !showShortcuts;
     }
@@ -459,11 +522,12 @@
 </script>
 
 <div class="aevum-frame" role="presentation" on:click={() => { workspaceMenu = null; }}>
-  <div class="aevum-shell">
+  <div class:sidebar-collapsed={settings.sidebarCollapsed} class="aevum-shell">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-symbol"><Icon name="terminal" size={20} /></div>
         <div><strong>TermDeck</strong><span>AEVUM WORKSPACE CONSOLE</span></div>
+        <button class="icon-button sidebar-toggle" aria-label={settings.sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={settings.sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} on:click|stopPropagation={() => { settings = { ...settings, sidebarCollapsed: !settings.sidebarCollapsed }; }}><Icon name="chevron" /></button>
       </div>
 
       <div class="sidebar-heading">
@@ -501,6 +565,7 @@
       <button class="new-workspace" on:click={addWorkspace}><Icon name="plus" /> New workspace</button>
       <div class="sidebar-tools">
         <button on:click={() => { showDockDialog = true; }}><Icon name="dock" /><span><strong>Dock external</strong><small>Drop a location</small></span></button>
+        <button on:click={() => { showFileBrowser = !showFileBrowser; }}><Icon name="folder" /><span><strong>File browser</strong><small>Browse workspace files</small></span></button>
         <button on:click={() => { showShortcuts = true; }}><Icon name="keyboard" /><span><strong>Shortcuts</strong><small>Ctrl + /</small></span></button>
         <button on:click={() => { showSettings = true; }}><Icon name="settings" /><span><strong>Settings</strong><small>Terminal preferences</small></span></button>
       </div>
@@ -519,6 +584,8 @@
           </div>
         </div>
         <div class="header-actions">
+          <button class:active={speechActive} class="button quiet speech-button" title="Dictate into selected terminal (Ctrl+Shift+Space)" on:click={transcribeIntoActiveTerminal}><Icon name="microphone" size={15} /> {speechActive ? 'Listening...' : 'Dictate'}</button>
+            <button class="button quiet" title="Toggle file browser" on:click={() => { showFileBrowser = !showFileBrowser; }}><Icon name="folder" size={15} /> Files</button>
           <button class="button quiet dock-button" on:click={() => { showDockDialog = true; }}><Icon name="dock" size={15} /> Dock external</button>
           <button class="button primary" on:click={() => addTerminal()}><Icon name="plus" size={16} /> New terminal <kbd>Ctrl ⇧ T</kbd></button>
         </div>
@@ -533,6 +600,8 @@
             aria-selected={terminal.id === activeWorkspace.activeTerminalId}
             draggable="true"
             on:dragstart={(event) => startTerminalDrag(event, terminal.id, activeWorkspace.id)}
+            on:dragover={(event) => event.preventDefault()}
+            on:drop={(event) => dropTerminalOnTerminal(event, activeWorkspace.id, index)}
             on:click={() => activateTerminal(activeWorkspace.id, terminal.id)}
             on:dblclick={() => { editing = { kind: 'terminal', workspaceId: activeWorkspace.id, terminalId: terminal.id, value: terminal.name }; }}
           ><span>{String(index + 1).padStart(2, '0')}</span>{terminal.name}<i></i></button>
@@ -555,11 +624,16 @@
             onactivate={() => activateTerminal(located.workspaceId, located.terminal.id)}
             onclose={() => closeTerminal(located.workspaceId, located.terminal.id)}
             onrename={() => { editing = { kind: 'terminal', workspaceId: located.workspaceId, terminalId: located.terminal.id, value: located.terminal.name }; }}
+            onconfigure={() => { startupEditing = { workspaceId: located.workspaceId, terminalId: located.terminal.id }; }}
             ondragstart={(event) => startTerminalDrag(event, located.terminal.id, located.workspaceId)}
+            ondragover={(event) => event.preventDefault()}
+            ondrop={(event) => dropTerminalOnTerminal(event, located.workspaceId, located.workspaceId === activeWorkspace.id ? activeWorkspace.terminals.findIndex((terminal) => terminal.id === located.terminal.id) : 0)}
             oncwdchange={(cwd) => updateTerminalCwd(located.workspaceId, located.terminal.id, cwd)}
             retainCommandHistory={settings.retainCommandHistory}
             retainScrollback={settings.retainScrollback}
             scrollbackLines={settings.scrollbackLines}
+            fontSize={settings.terminalFontSize}
+            oncopilotstart={() => updateTerminalCopilot(located.workspaceId, located.terminal.id)}
             oncommandhistorychange={(commandHistory) => updateTerminalCommandHistory(located.workspaceId, located.terminal.id, commandHistory)}
             onscrollbackchange={(scrollback) => updateTerminalScrollback(located.workspaceId, located.terminal.id, scrollback)}
           />
@@ -586,6 +660,9 @@
       </div>
 
       <footer class="status-bar"><span><i></i> Native PTY connected</span><span>Ctrl+Tab terminals · Alt+Shift+←/→ resize · Ctrl+/ shortcuts</span><span>AUTO TILE <Icon name="grid" size={12} /></span></footer>
+      {#if showFileBrowser}
+        <FileBrowser initialPath={activeWorkspace.cwd || homePath} onclose={() => { showFileBrowser = false; }} onopen={(path) => dockPath(path)} />
+      {/if}
     </main>
   </div>
 </div>
@@ -596,6 +673,12 @@
 {#if showShortcuts}<ShortcutOverlay onclose={() => { showShortcuts = false; }} />{/if}
 {#if showDockDialog}<DockDialog onclose={() => { showDockDialog = false; }} onpick={pickDockLocation} />{/if}
 {#if showSettings}<SettingsDialog {settings} onchange={updateSettings} onclose={() => { showSettings = false; }} />{/if}
+{#if startupEditing}
+  {@const startupTerminal = workspaces.find((workspace) => workspace.id === startupEditing?.workspaceId)?.terminals.find((terminal) => terminal.id === startupEditing?.terminalId)}
+  {#if startupTerminal}
+    <StartupCommandDialog terminalName={startupTerminal.name} initialValue={startupTerminal.startupCommand ?? ''} oncancel={() => { startupEditing = null; }} onconfirm={updateTerminalStartupCommand} />
+  {/if}
+{/if}
 {#if toast}
   <div class="toast"><div class="toast-icon"><Icon name="spark" /></div><div><strong>{toast.title}</strong><span>{toast.message}</span></div><button aria-label="Dismiss notification" on:click={() => { toast = null; }}><Icon name="close" size={14} /></button></div>
 {/if}

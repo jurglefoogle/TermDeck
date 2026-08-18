@@ -2,6 +2,9 @@ export type TerminalSession = {
   id: string;
   name: string;
   cwd: string;
+  startupCommand?: string;
+  copilotSessionId?: string;
+  copilotActive?: boolean;
   commandHistory?: string[];
   scrollback?: string[];
   scrollbackAnsi?: string;

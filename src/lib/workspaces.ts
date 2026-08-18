@@ -35,11 +35,18 @@ export function makeId(prefix: string): string {
   return `${prefix}_${value}`;
 }
 
+function makeCopilotSessionId(): string {
+  if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID();
+  const hex = `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.padEnd(32, '0').slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
 export function createTerminal(index: number, cwd: string, name?: string): TerminalSession {
   return {
     id: makeId('term'),
     name: name?.trim() || `Terminal ${index}`,
     cwd,
+    copilotSessionId: makeCopilotSessionId(),
   };
 }
 
@@ -63,6 +70,11 @@ function normalizeTerminal(value: unknown, workspaceCwd: string): TerminalSessio
     id: item.id,
     name: item.name.trim() || 'Terminal',
     cwd: typeof item.cwd === 'string' && item.cwd ? item.cwd : workspaceCwd,
+    startupCommand: typeof item.startupCommand === 'string' ? item.startupCommand.trim() : undefined,
+    copilotSessionId: typeof item.copilotSessionId === 'string' && item.copilotSessionId.trim()
+      ? item.copilotSessionId.trim()
+      : makeCopilotSessionId(),
+    copilotActive: item.copilotActive === true,
     commandHistory: retainedStringLines(item.commandHistory, MAX_COMMAND_HISTORY),
     scrollback: retainedStringLines(item.scrollback, 50_000),
     scrollbackAnsi: typeof item.scrollbackAnsi === 'string' ? item.scrollbackAnsi : undefined,
@@ -315,5 +327,23 @@ export function moveTerminal(
       };
     }
     return workspace;
+  });
+}
+
+export function reorderTerminal(
+  workspaces: Workspace[],
+  workspaceId: string,
+  terminalId: string,
+  targetIndex: number,
+): Workspace[] {
+  return workspaces.map((workspace) => {
+    if (workspace.id !== workspaceId) return workspace;
+    const sourceIndex = workspace.terminals.findIndex((terminal) => terminal.id === terminalId);
+    if (sourceIndex < 0) return workspace;
+    const terminals = [...workspace.terminals];
+    const [terminal] = terminals.splice(sourceIndex, 1);
+    const insertionIndex = Math.max(0, Math.min(targetIndex, terminals.length));
+    terminals.splice(insertionIndex, 0, terminal);
+    return { ...workspace, terminals };
   });
 }

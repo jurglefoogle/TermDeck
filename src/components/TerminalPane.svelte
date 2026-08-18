@@ -19,11 +19,16 @@
   export let onactivate: () => void;
   export let onclose: () => void;
   export let onrename: () => void;
+  export let onconfigure: () => void;
   export let ondragstart: (event: DragEvent) => void;
+  export let ondragover: (event: DragEvent) => void;
+  export let ondrop: (event: DragEvent) => void;
   export let oncwdchange: (cwd: string) => void;
   export let retainCommandHistory = false;
   export let retainScrollback = false;
   export let scrollbackLines = 5000;
+  export let fontSize = 13;
+  export let oncopilotstart: () => void;
   export let oncommandhistorychange: (history: string[]) => void;
   export let onscrollbackchange: (scrollbackAnsi: string) => void;
 
@@ -36,6 +41,7 @@
   let shellName = 'shell';
   let pendingEvents: PtyEvent[] = [];
   let retainedHistory = terminal.commandHistory ?? [];
+  let inputLine = '';
   let scrollbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   const theme = {
@@ -126,6 +132,18 @@
       const queued = pendingEvents;
       pendingEvents = [];
       queued.forEach(handlePtyEvent);
+      const startupCommand = terminal.startupCommand?.trim() ?? '';
+      const startsCopilot = /^copilot(?:\.exe)?(?:\s|$)/i.test(startupCommand)
+        && !/--(?:session-id|resume|continue)\b/i.test(startupCommand);
+      if (terminal.copilotActive && terminal.copilotSessionId) {
+        invoke('write_terminal', { sessionId: terminal.id, data: `copilot --session-id ${terminal.copilotSessionId}\r` }).catch(() => undefined);
+      } else if (startupCommand) {
+        const command = startsCopilot && terminal.copilotSessionId
+          ? `${startupCommand} --session-id ${terminal.copilotSessionId}`
+          : startupCommand;
+        if (startsCopilot) oncopilotstart();
+        invoke('write_terminal', { sessionId: terminal.id, data: `${command}\r` }).catch(() => undefined);
+      }
       await fitAndResize();
       if (visible && active) xterm.focus();
     } catch (error) {
@@ -151,7 +169,7 @@
       cursorBlink: true,
       cursorStyle: 'bar',
       fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
-      fontSize: 13,
+      fontSize,
       lineHeight: 1.18,
       scrollback: scrollbackLines,
       theme,
@@ -177,7 +195,24 @@
     xterm.open(host);
 
     const input = xterm.onData((data) => {
-      if (generation > 0) invoke('write_terminal', { sessionId: terminal.id, data }).catch(() => undefined);
+      if (generation === 0) return;
+      let nextData = data;
+      const hasSubmit = data.includes('\r') || data.includes('\n');
+      if (hasSubmit) {
+        const command = inputLine.trim();
+        if (/^copilot(?:\.exe)?(?:\s|$)/i.test(command)
+          && !/--(?:session-id|resume|continue)\b/i.test(command)
+          && terminal.copilotSessionId) {
+          nextData = data.replace(/[\r\n]/, ` --session-id ${terminal.copilotSessionId}$&`);
+          oncopilotstart();
+        }
+        inputLine = '';
+      } else if (data === '\u007f' || data === '\b') {
+        inputLine = inputLine.slice(0, -1);
+      } else if (/^[\x20-\x7e]+$/.test(data)) {
+        inputLine += data;
+      }
+      invoke('write_terminal', { sessionId: terminal.id, data: nextData }).catch(() => undefined);
     });
     const observer = new ResizeObserver(() => fitAndResize());
     observer.observe(host);
@@ -214,6 +249,10 @@
   }
   $: retainedHistory = terminal.commandHistory ?? [];
   $: if (xterm) xterm.options.scrollback = scrollbackLines;
+  $: if (xterm && xterm.options.fontSize !== fontSize) {
+    xterm.options.fontSize = fontSize;
+    tick().then(() => fitAndResize());
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -224,6 +263,8 @@
   style={visible ? positionStyle : 'display: none'}
   aria-label={`${terminal.name} terminal`}
   on:mousedown={onactivate}
+  on:dragover={ondragover}
+  on:drop={ondrop}
 >
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <header class="terminal-pane-header" draggable="true" on:dragstart={ondragstart}>
@@ -238,6 +279,7 @@
       {#if status === 'exited'}
         <button class="icon-button" title="Restart terminal" on:click|stopPropagation={restart}><Icon name="restart" size={14} /></button>
       {/if}
+      <button class="icon-button" title="Edit startup command" on:click|stopPropagation={onconfigure}><Icon name="settings" size={13} /></button>
       <button class="icon-button" title="Rename terminal" on:click|stopPropagation={onrename}><Icon name="edit" size={13} /></button>
       <button class="icon-button danger" title="Close terminal" on:click|stopPropagation={onclose}><Icon name="close" size={14} /></button>
     </div>

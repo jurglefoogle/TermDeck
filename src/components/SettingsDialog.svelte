@@ -5,6 +5,7 @@
     MIN_SCROLLBACK_LINES,
     clampScrollbackLines,
   } from '../lib/terminal-retention';
+  import { clampTerminalFontSize, MAX_TERMINAL_FONT_SIZE, MIN_TERMINAL_FONT_SIZE } from '../lib/settings';
   import Icon from './Icon.svelte';
 
   export let settings: AppSettings;
@@ -19,6 +20,11 @@
   function updateScrollbackLines(value: string) {
     onchange({ ...settings, scrollbackLines: clampScrollbackLines(Number(value)) });
   }
+
+  function updateFontSize(value: string) {
+    onchange({ ...settings, terminalFontSize: clampTerminalFontSize(Number(value)) });
+  }
+
 </script>
 
 <div class="modal-backdrop" role="presentation" on:click|self={onclose}>
@@ -69,6 +75,18 @@
           disabled={!settings.retainScrollback}
           aria-label="Scrollback line limit"
           on:change={(event) => updateScrollbackLines(event.currentTarget.value)}
+        />
+      </label>
+      <label class="settings-number">
+        <span><strong>Terminal font size</strong><small>{MIN_TERMINAL_FONT_SIZE}–{MAX_TERMINAL_FONT_SIZE}px, applied live</small></span>
+        <input
+          type="number"
+          min={MIN_TERMINAL_FONT_SIZE}
+          max={MAX_TERMINAL_FONT_SIZE}
+          step="1"
+          value={settings.terminalFontSize}
+          aria-label="Terminal font size"
+          on:change={(event) => updateFontSize(event.currentTarget.value)}
         />
       </label>
     </div>

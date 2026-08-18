@@ -10,6 +10,7 @@ import {
   moveTerminal,
   normalizeSplitRatiosForRows,
   purgeCapturedCommandHistory,
+  reorderTerminal,
   STORAGE_KEY,
 } from './workspaces';
 import type { Workspace } from './types';
@@ -113,6 +114,18 @@ describe('workspace terminal movement', () => {
     expect(moved[1].activeTerminalId).toBe('one');
   });
 
+  it('reorders terminals within the active workspace', () => {
+    const workspace: Workspace = {
+      id: 'a', name: 'A', cwd: '/a', activeTerminalId: 'one', terminals: [
+        { id: 'one', name: 'One', cwd: '/a' },
+        { id: 'two', name: 'Two', cwd: '/a' },
+        { id: 'three', name: 'Three', cwd: '/a' },
+      ],
+    };
+    const reordered = reorderTerminal([workspace], 'a', 'three', 0);
+    expect(reordered[0].terminals.map((terminal) => terminal.id)).toEqual(['three', 'one', 'two']);
+  });
+
   describe('retained terminal state', () => {
     it('restores persisted commands and scrollback for the matching terminal', () => {
       const storage = {
@@ -125,6 +138,7 @@ describe('workspace terminal movement', () => {
             id: 'terminal',
             name: 'Terminal',
             cwd: '/home/dennis/project',
+            startupCommand: 'cd ~/project\nnpm run dev',
             commandHistory: ['pwd', 'npm test'],
             scrollback: ['PS> pwd', '/home/dennis/project'],
             scrollbackAnsi: '\u001b[36mPS>\u001b[0m pwd',
@@ -136,6 +150,9 @@ describe('workspace terminal movement', () => {
       expect(terminal.commandHistory).toEqual(['pwd', 'npm test']);
       expect(terminal.scrollback).toEqual(['PS> pwd', '/home/dennis/project']);
       expect(terminal.scrollbackAnsi).toBe('\u001b[36mPS>\u001b[0m pwd');
+      expect(terminal.startupCommand).toBe('cd ~/project\nnpm run dev');
+      expect(terminal.copilotSessionId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(terminal.copilotActive).toBe(false);
     });
   });
 });

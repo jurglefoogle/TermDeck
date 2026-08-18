@@ -11,6 +11,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, State};
+#[cfg(target_os = "windows")]
+use windows::Media::SpeechRecognition::SpeechRecognizer;
 
 const MAX_TERMINAL_ID_LEN: usize = 100;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -144,6 +146,14 @@ struct EnvironmentInfo {
 struct DockPathInfo {
     directory: String,
     suggested_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectoryEntry {
+    name: String,
+    path: String,
+    is_directory: bool,
 }
 
 struct ShellLaunch {
@@ -323,6 +333,7 @@ fn windows_shell_launch(
         shell,
         args: vec![
             "-NoLogo".to_string(),
+            "-NoProfile".to_string(),
             "-NoExit".to_string(),
             "-Command".to_string(),
             command,
@@ -714,6 +725,38 @@ fn complete_smoke_test(success: bool, message: String, app: AppHandle) {
 }
 
 #[tauri::command]
+fn transcribe_speech() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let recognizer = SpeechRecognizer::new()
+            .map_err(|error| format!("Unable to initialize Windows speech recognition: {error}"))?;
+        recognizer
+            .CompileConstraintsAsync()
+            .map_err(|error| format!("Unable to prepare speech recognition: {error}"))?
+            .get()
+            .map_err(|error| format!("Unable to prepare speech recognition: {error}"))?;
+        let result = recognizer
+            .RecognizeAsync()
+            .map_err(|error| {
+                if error.code().0 as u32 == 0x8004_5509 {
+                    "Windows online speech recognition is disabled. Open Settings > Privacy & security > Speech and enable Online speech recognition, then try again.".to_string()
+                } else {
+                    format!("Unable to start speech recognition: {error}")
+                }
+            })?
+            .get()
+            .map_err(|error| format!("Speech recognition failed: {error}"))?;
+        return result
+            .Text()
+            .map(|text| text.to_string())
+            .map_err(|error| format!("Unable to read speech recognition result: {error}"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    Err("Windows system speech is only available on Windows".to_string())
+}
+
+#[tauri::command]
 fn normalize_dock_path(path: String) -> Result<DockPathInfo, String> {
     let trimmed = path.trim().trim_matches(['"', '\'']);
     if trimmed.is_empty() {
@@ -743,6 +786,29 @@ fn normalize_dock_path(path: String) -> Result<DockPathInfo, String> {
     })
 }
 
+#[tauri::command]
+fn list_directory(path: String) -> Result<Vec<DirectoryEntry>, String> {
+    let directory = existing_directory(&path);
+    let mut entries = fs::read_dir(&directory)
+        .map_err(|error| format!("Unable to read folder: {error}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            Some(DirectoryEntry {
+                path: entry.path().to_string_lossy().into_owned(),
+                name,
+                is_directory: file_type.is_dir(),
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (!entry.is_directory, entry.name.to_ascii_lowercase()));
+    Ok(entries)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let manager = TerminalManager::default();
@@ -758,7 +824,9 @@ pub fn run() {
             get_environment,
             running_terminal_count,
             complete_smoke_test,
+            transcribe_speech,
             normalize_dock_path,
+            list_directory,
         ])
         .build(tauri::generate_context!())
         .expect("error while building TermDeck");
@@ -836,13 +904,14 @@ mod tests {
         )
         .expect("build PowerShell launch");
         assert_eq!(launch.args[0], "-NoLogo");
-        assert_eq!(launch.args[1], "-NoExit");
-        assert_eq!(launch.args[2], "-Command");
-        assert!(launch.args[3].contains("function global:prompt"));
-        assert!(launch.args[3].contains("]7;"));
+        assert_eq!(launch.args[1], "-NoProfile");
+        assert_eq!(launch.args[2], "-NoExit");
+        assert_eq!(launch.args[3], "-Command");
+        assert!(launch.args[4].contains("function global:prompt"));
+        assert!(launch.args[4].contains("]7;"));
         // Restore must go through PSReadLine's own history file: rebinding the
         // arrow keys shadows the native bindings that accept a suggestion.
-        assert!(launch.args[3].contains("Set-PSReadLineOption -HistorySavePath"));
+        assert!(launch.args[4].contains("Set-PSReadLineOption -HistorySavePath"));
         assert!(!launch.args[3].contains("Set-PSReadLineKeyHandler"));
 
         let history_path = launch.init_path.expect("history file written");
