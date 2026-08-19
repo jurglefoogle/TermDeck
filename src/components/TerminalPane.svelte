@@ -21,6 +21,8 @@
   export let onrename: () => void;
   export let onconfigure: () => void;
   export let ondragstart: (event: DragEvent) => void;
+  export let ondragend: () => void;
+  export let onpointerdragstart: (event: PointerEvent) => void;
   export let ondragover: (event: DragEvent) => void;
   export let ondrop: (event: DragEvent) => void;
   export let oncwdchange: (cwd: string) => void;
@@ -29,8 +31,11 @@
   export let scrollbackLines = 5000;
   export let fontSize = 13;
   export let oncopilotstart: () => void;
+  export let maximized = false;
+  export let onmaximize: () => void;
   export let oncommandhistorychange: (history: string[]) => void;
   export let onscrollbackchange: (scrollbackAnsi: string) => void;
+  export let onready: () => void;
 
   let host: HTMLDivElement;
   let xterm: Terminal | null = null;
@@ -99,6 +104,18 @@
     oncommandhistorychange(history);
   }
 
+  async function pasteOnContextMenu(event: MouseEvent) {
+    event.preventDefault();
+    if (generation === 0 || !xterm) return;
+    try {
+      const text = await invoke<string>('read_clipboard');
+      if (text) xterm.paste(text);
+    } catch {
+      // Native clipboard access can fail while another application owns it.
+    }
+    xterm.focus();
+  }
+
   async function fitAndResize() {
     if (!visible || !host || host.clientWidth < 20 || host.clientHeight < 20 || !xterm || !fitAddon) return;
     try {
@@ -129,6 +146,7 @@
       generation = info.generation;
       shellName = info.shell.split(/[\\/]/).pop() || info.shell;
       status = 'running';
+      onready();
       const queued = pendingEvents;
       pendingEvents = [];
       queued.forEach(handlePtyEvent);
@@ -147,6 +165,7 @@
       await fitAndResize();
       if (visible && active) xterm.focus();
     } catch (error) {
+      onready();
       const isDesktop = '__TAURI_INTERNALS__' in window;
       status = isDesktop ? 'exited' : 'preview';
       if (isDesktop) xterm.writeln(`\r\n\x1b[31mUnable to start shell: ${String(error)}\x1b[0m`);
@@ -259,15 +278,26 @@
 <section
   class:active
   class:visible
+  class:maximized
   class="terminal-pane"
+  data-terminal-id={terminal.id}
   style={visible ? positionStyle : 'display: none'}
   aria-label={`${terminal.name} terminal`}
   on:mousedown={onactivate}
-  on:dragover={ondragover}
+  on:dragover={(event) => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; ondragover(event); }}
   on:drop={ondrop}
+  on:contextmenu={pasteOnContextMenu}
 >
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <header class="terminal-pane-header" draggable="true" on:dragstart={ondragstart}>
+  <header
+    class="terminal-pane-header"
+    draggable="true"
+    on:dragstart={ondragstart}
+    on:dragend={ondragend}
+    on:pointerdown={onpointerdragstart}
+    on:dragover={(event) => { event.preventDefault(); event.stopPropagation(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; ondragover(event); }}
+    on:drop|stopPropagation={ondrop}
+  >
     <div class="terminal-title-wrap">
       <span class="status-dot {status}"></span>
       <Icon name="terminal" size={14} />
@@ -281,6 +311,7 @@
       {/if}
       <button class="icon-button" title="Edit startup command" on:click|stopPropagation={onconfigure}><Icon name="settings" size={13} /></button>
       <button class="icon-button" title="Rename terminal" on:click|stopPropagation={onrename}><Icon name="edit" size={13} /></button>
+      <button class="icon-button" title={maximized ? 'Restore terminal' : 'Maximize terminal'} on:click|stopPropagation={onmaximize}><Icon name={maximized ? 'minimize' : 'maximize'} size={13} /></button>
       <button class="icon-button danger" title="Close terminal" on:click|stopPropagation={onclose}><Icon name="close" size={14} /></button>
     </div>
   </header>

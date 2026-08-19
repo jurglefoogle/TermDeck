@@ -11,6 +11,7 @@ import {
   normalizeSplitRatiosForRows,
   purgeCapturedCommandHistory,
   reorderTerminal,
+  swapTerminal,
   STORAGE_KEY,
 } from './workspaces';
 import type { Workspace } from './types';
@@ -51,12 +52,13 @@ describe('automatic terminal layout', () => {
     expect(styles.four).toContain('left: calc(35% + 4px)');
   });
 
-  it('builds one resize handle per side-by-side boundary', () => {
+  it('builds resize handles for vertical and horizontal boundaries', () => {
     const terminals = Array.from({ length: 4 }, (_, index) => ({ id: String(index), name: '', cwd: '' }));
     const layout = computeTileLayout(terminals, [[0.5, 0.5], [0.3, 0.7]]);
     expect(layout.handles).toEqual([
       { rowIndex: 0, handleIndex: 0, leftPercent: 50, topPercent: 0, heightPercent: 50 },
       { rowIndex: 1, handleIndex: 0, leftPercent: 30, topPercent: 50, heightPercent: 50 },
+      { rowIndex: 0, handleIndex: -1, leftPercent: 0, topPercent: 50, heightPercent: 0 },
     ]);
   });
 
@@ -124,6 +126,18 @@ describe('workspace terminal movement', () => {
     };
     const reordered = reorderTerminal([workspace], 'a', 'three', 0);
     expect(reordered[0].terminals.map((terminal) => terminal.id)).toEqual(['three', 'one', 'two']);
+  });
+
+  it('swaps two terminals without changing the other slots', () => {
+    const workspace: Workspace = {
+      id: 'a', name: 'A', cwd: '/a', activeTerminalId: 'one', terminals: [
+        { id: 'one', name: 'One', cwd: '/a' },
+        { id: 'two', name: 'Two', cwd: '/a' },
+        { id: 'three', name: 'Three', cwd: '/a' },
+      ],
+    };
+    const swapped = swapTerminal([workspace], 'a', 'one', 'three');
+    expect(swapped[0].terminals.map((terminal) => terminal.id)).toEqual(['three', 'two', 'one']);
   });
 
   describe('retained terminal state', () => {

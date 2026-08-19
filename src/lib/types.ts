@@ -18,6 +18,7 @@ export type Workspace = {
   activeTerminalId: string | null;
   splitRatios?: number[][];
   splitRatio?: number;
+  rowRatios?: number[];
 };
 
 export type LocatedTerminal = {

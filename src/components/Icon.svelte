@@ -1,5 +1,5 @@
 <script lang="ts">
-  export let name: 'terminal' | 'plus' | 'folder' | 'edit' | 'close' | 'more' | 'grid' | 'restart' | 'chevron' | 'dock' | 'keyboard' | 'settings' | 'arrow-left' | 'arrow-right' | 'spark' | 'refresh' | 'microphone' = 'terminal';
+  export let name: 'terminal' | 'plus' | 'folder' | 'edit' | 'close' | 'more' | 'grid' | 'restart' | 'chevron' | 'dock' | 'keyboard' | 'settings' | 'arrow-left' | 'arrow-right' | 'spark' | 'refresh' | 'microphone' | 'maximize' | 'minimize' = 'terminal';
   export let size = 16;
 </script>
 
@@ -33,6 +33,10 @@
     <path d="m14 6-6 6 6 6" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
   {:else if name === 'arrow-right'}
     <path d="m10 6 6 6-6 6" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+  {:else if name === 'maximize'}
+    <path d="M4 9V4h5M15 9V4h-5M4 15v5h5M15 15v5h-5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" />
+  {:else if name === 'minimize'}
+    <path d="M4 9h5V4M15 9h-5V4M4 15h5v5M15 15h-5v5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" />
   {:else if name === 'spark'}
     <path d="m12 3 1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z" stroke="currentColor" stroke-linejoin="round" stroke-width="1.5" />
   {:else if name === 'refresh'}

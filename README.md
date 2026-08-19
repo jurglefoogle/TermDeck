@@ -12,10 +12,8 @@ TermDeck is a cross-platform terminal workspace for Windows and Linux, rebuilt w
 - Reorders terminals within a workspace by dragging tabs or pane headers
 - Moves the focused terminal with `Ctrl+Shift+Left/Right`
 - Collapses the workspace sidebar and adjusts terminal font size from Settings
-- Browses the active workspace folder in a docked file browser
 - Gives each terminal its own automatically generated Copilot CLI session and resumes it when that terminal restarts
 - Saves an optional startup command per terminal and runs it after the shell launches
-- Dictates one Windows speech utterance into the selected terminal without submitting it
 - Docks folders and files dropped from Explorer or a Linux file manager
 - Persists workspace, terminal, and project-folder metadata
 - Runs PowerShell on Windows and `$SHELL`/bash on Linux through `portable-pty`
@@ -24,7 +22,7 @@ Moving a terminal between TermDeck workspaces does not restart it. The Rust PTY 
 
 ## External terminal docking
 
-Dropping a folder or file anywhere in TermDeck opens a new managed shell at that location and makes that folder the workspace default. The same flow is available under **Dock external**.
+Dropping a folder or file anywhere in TermDeck opens a new managed shell at that location and makes that folder the workspace default.
 
 An already-running terminal process cannot be transferred between unrelated PTY hosts on Windows or Linux. The operating systems do not expose a portable mechanism for moving its process, scrollback, and PTY ownership into TermDeck. External docking therefore recreates a managed shell at the selected location; it does not claim to adopt the original process.
 

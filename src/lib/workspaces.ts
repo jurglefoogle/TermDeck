@@ -26,6 +26,7 @@ export type TileLayout = {
   styles: Record<string, string>;
   handles: TileHandle[];
   rowSplitRatios: number[][];
+  rowRatios: number[];
 };
 
 export function makeId(prefix: string): string {
@@ -103,6 +104,7 @@ function normalizeWorkspace(value: unknown): Workspace | null {
       ? item.activeTerminalId as string
       : terminals[0]?.id ?? null,
     splitRatios,
+    rowRatios: Array.isArray(item.rowRatios) ? item.rowRatios.filter((ratio): ratio is number => typeof ratio === 'number') : undefined,
   };
 }
 
@@ -251,15 +253,21 @@ export function adjustRowSplitRatios(
 export function computeTileLayout(
   terminals: TerminalSession[],
   splitRatios?: number[][],
+  rowRatios?: number[],
 ): TileLayout {
   const rows = distributeRows(terminals);
   const normalizedSplitRatios = normalizeSplitRatiosForRows(rows, splitRatios);
   const styles: Record<string, string> = {};
   const handles: TileHandle[] = [];
-  const rowHeight = rows.length ? 100 / rows.length : 100;
+  const normalizedRowRatios = rows.map(() => 1 / Math.max(1, rows.length));
+  if (rowRatios && rowRatios.length === rows.length) {
+    const total = rowRatios.reduce((sum, ratio) => sum + Math.max(0.1, ratio), 0);
+    rowRatios.forEach((ratio, index) => { normalizedRowRatios[index] = Math.max(0.1, ratio) / total; });
+  }
   rows.forEach((row, rowIndex) => {
     const ratios = normalizedSplitRatios[rowIndex];
-    const top = rowIndex * rowHeight;
+    const top = normalizedRowRatios.slice(0, rowIndex).reduce((sum, ratio) => sum + ratio, 0) * 100;
+    const rowHeight = normalizedRowRatios[rowIndex] * 100;
     let left = 0;
     row.forEach((terminal, columnIndex) => {
       const width = ratios[columnIndex] * 100;
@@ -282,10 +290,21 @@ export function computeTileLayout(
       }
     });
   });
+  for (let rowIndex = 0; rowIndex < rows.length - 1; rowIndex += 1) {
+    const topPercent = normalizedRowRatios.slice(0, rowIndex + 1).reduce((sum, ratio) => sum + ratio, 0) * 100;
+    handles.push({
+      rowIndex,
+      handleIndex: -1,
+      leftPercent: 0,
+      topPercent,
+      heightPercent: 0,
+    });
+  }
   return {
     styles,
     handles,
     rowSplitRatios: normalizedSplitRatios,
+    rowRatios: normalizedRowRatios,
   };
 }
 
@@ -344,6 +363,24 @@ export function reorderTerminal(
     const [terminal] = terminals.splice(sourceIndex, 1);
     const insertionIndex = Math.max(0, Math.min(targetIndex, terminals.length));
     terminals.splice(insertionIndex, 0, terminal);
+    return { ...workspace, terminals };
+  });
+}
+
+export function swapTerminal(
+  workspaces: Workspace[],
+  workspaceId: string,
+  firstTerminalId: string,
+  secondTerminalId: string,
+): Workspace[] {
+  if (firstTerminalId === secondTerminalId) return workspaces;
+  return workspaces.map((workspace) => {
+    if (workspace.id !== workspaceId) return workspace;
+    const firstIndex = workspace.terminals.findIndex((terminal) => terminal.id === firstTerminalId);
+    const secondIndex = workspace.terminals.findIndex((terminal) => terminal.id === secondTerminalId);
+    if (firstIndex < 0 || secondIndex < 0) return workspace;
+    const terminals = [...workspace.terminals];
+    [terminals[firstIndex], terminals[secondIndex]] = [terminals[secondIndex], terminals[firstIndex]];
     return { ...workspace, terminals };
   });
 }
