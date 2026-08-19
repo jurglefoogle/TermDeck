@@ -8,11 +8,11 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, State};
-#[cfg(target_os = "windows")]
-use windows::Media::SpeechRecognition::SpeechRecognizer;
 
 const MAX_TERMINAL_ID_LEN: usize = 100;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -64,7 +64,6 @@ impl Osc52ClipboardParser {
             });
             let Some((end, terminator_len)) = terminator else {
                 if self.pending.len() > OSC52_PREFIX.len() + MAX_OSC52_ENCODED_BYTES {
-                    self.pending.clear();
                 }
                 break;
             };
@@ -271,7 +270,11 @@ fn resolve_shell(session_id: &str, generation: u64, history: Vec<String>) -> Res
 
 #[cfg(target_os = "windows")]
 fn find_windows_executable(name: &str) -> Option<String> {
-    let output = Command::new("where.exe").arg(name).output().ok()?;
+    let output = Command::new("where.exe")
+        .arg(name)
+        .creation_flags(0x0800_0000)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -725,38 +728,6 @@ fn complete_smoke_test(success: bool, message: String, app: AppHandle) {
 }
 
 #[tauri::command]
-fn transcribe_speech() -> Result<String, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let recognizer = SpeechRecognizer::new()
-            .map_err(|error| format!("Unable to initialize Windows speech recognition: {error}"))?;
-        recognizer
-            .CompileConstraintsAsync()
-            .map_err(|error| format!("Unable to prepare speech recognition: {error}"))?
-            .get()
-            .map_err(|error| format!("Unable to prepare speech recognition: {error}"))?;
-        let result = recognizer
-            .RecognizeAsync()
-            .map_err(|error| {
-                if error.code().0 as u32 == 0x8004_5509 {
-                    "Windows online speech recognition is disabled. Open Settings > Privacy & security > Speech and enable Online speech recognition, then try again.".to_string()
-                } else {
-                    format!("Unable to start speech recognition: {error}")
-                }
-            })?
-            .get()
-            .map_err(|error| format!("Speech recognition failed: {error}"))?;
-        return result
-            .Text()
-            .map(|text| text.to_string())
-            .map_err(|error| format!("Unable to read speech recognition result: {error}"));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    Err("Windows system speech is only available on Windows".to_string())
-}
-
-#[tauri::command]
 fn normalize_dock_path(path: String) -> Result<DockPathInfo, String> {
     let trimmed = path.trim().trim_matches(['"', '\'']);
     if trimmed.is_empty() {
@@ -809,6 +780,28 @@ fn list_directory(path: String) -> Result<Vec<DirectoryEntry>, String> {
     Ok(entries)
 }
 
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    let canonical = PathBuf::from(path).canonicalize().map_err(|error| format!("Unable to open path: {error}"))?;
+    #[cfg(target_os = "windows")]
+    Command::new("cmd")
+        .args(["/C", "start", "", &canonical.to_string_lossy()])
+        .spawn()
+        .map_err(|error| format!("Unable to open path: {error}"))?;
+    #[cfg(target_os = "macos")]
+    Command::new("open").arg(&canonical).spawn().map_err(|error| format!("Unable to open path: {error}"))?;
+    #[cfg(target_os = "linux")]
+    Command::new("xdg-open").arg(&canonical).spawn().map_err(|error| format!("Unable to open path: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn read_clipboard() -> Result<String, String> {
+    Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get_text())
+        .map_err(|error| format!("Unable to read clipboard: {error}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let manager = TerminalManager::default();
@@ -824,9 +817,10 @@ pub fn run() {
             get_environment,
             running_terminal_count,
             complete_smoke_test,
-            transcribe_speech,
             normalize_dock_path,
             list_directory,
+            open_path,
+            read_clipboard,
         ])
         .build(tauri::generate_context!())
         .expect("error while building TermDeck");

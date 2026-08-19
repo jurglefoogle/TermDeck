@@ -2,9 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-dialog';
   import { getCurrentWebview } from '@tauri-apps/api/webview';
-  import { onMount } from 'svelte';
-  import DockDialog from './components/DockDialog.svelte';
-  import FileBrowser from './components/FileBrowser.svelte';
+  import { onMount, tick } from 'svelte';
   import Icon from './components/Icon.svelte';
   import NameDialog from './components/NameDialog.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
@@ -25,6 +23,7 @@
     normalizeSplitRatiosForRows,
     moveTerminal as moveTerminalConfig,
     reorderTerminal as reorderTerminalConfig,
+    swapTerminal as swapTerminalConfig,
     purgeCapturedCommandHistory,
     STORAGE_KEY,
   } from './lib/workspaces';
@@ -42,13 +41,16 @@
   let editing: EditTarget | null = null;
   let workspaceMenu: string | null = null;
   let showShortcuts = false;
-  let showDockDialog = false;
   let showSettings = false;
-  let showFileBrowser = false;
+  let appReady = false;
+  let environmentReady = false;
+  let workspaceLoading = false;
+  let readyTerminalIds = new Set<string>();
+  let maximizedTerminalId: string | null = null;
   let startupEditing: { workspaceId: string; terminalId: string } | null = null;
-  let speechActive = false;
   let settings: AppSettings = loadSettings();
   let draggedTerminal: { terminalId: string; sourceWorkspaceId: string } | null = null;
+  let pointerDraggedTerminal: { terminalId: string; sourceWorkspaceId: string } | null = null;
   let dragOverWorkspaceId: string | null = null;
   let externalDropActive = false;
   let externalDropWorkspaceId: string | null = null;
@@ -61,12 +63,14 @@
   const KEYBOARD_SPLIT_STEP = 0.03;
 
   $: activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? workspaces[0];
-  $: activeRows = activeWorkspace ? distributeRows(activeWorkspace.terminals) : [];
+  $: layoutTerminals = activeWorkspace?.terminals ?? [];
+  $: activeRows = activeWorkspace ? distributeRows(layoutTerminals) : [];
   $: normalizedSplitRatios = normalizeSplitRatiosForRows(activeRows, activeWorkspace?.splitRatios);
-  $: tileLayout = activeWorkspace ? computeTileLayout(activeWorkspace.terminals, normalizedSplitRatios) : {
+  $: tileLayout = activeWorkspace ? computeTileLayout(layoutTerminals, normalizedSplitRatios, activeWorkspace.rowRatios) : {
     styles: {},
     handles: [],
     rowSplitRatios: [],
+    rowRatios: [],
   };
   $: tileStyles = tileLayout.styles;
   $: splitHandles = tileLayout.handles;
@@ -90,11 +94,22 @@
     workspaces = workspaces.map((workspace) => workspace.id === workspaceId ? update(workspace) : workspace);
   }
 
-  function addWorkspace() {
+  async function addWorkspace() {
+    workspaceLoading = true;
     const workspace = createWorkspace(`Workspace ${workspaces.length + 1}`, homePath);
     workspaces = [...workspaces, workspace];
     activeWorkspaceId = workspace.id;
     editing = { kind: 'workspace', workspaceId: workspace.id, value: workspace.name };
+    await tick();
+  }
+
+  function markTerminalReady(terminalId: string) {
+    readyTerminalIds = new Set([...readyTerminalIds, terminalId]);
+    const expected = allTerminals.map((located) => located.terminal.id);
+    if (expected.length > 0 && expected.every((id) => readyTerminalIds.has(id))) {
+      appReady = true;
+      workspaceLoading = false;
+    }
   }
 
   function deleteWorkspace(workspaceId: string) {
@@ -230,6 +245,10 @@
     updateWorkspace(workspaceId, (workspace) => ({ ...workspace, splitRatios }));
   }
 
+  function setWorkspaceRowRatios(workspaceId: string, rowRatios: number[]) {
+    updateWorkspace(workspaceId, (workspace) => ({ ...workspace, rowRatios }));
+  }
+
   function updateSplitRatioFromPointer(clientX: number) {
     if (!terminalStage || !activeResizeHandle) return;
     const handle = activeResizeHandle;
@@ -245,6 +264,23 @@
     );
     if (!nextSplitRatios) return;
     setWorkspaceSplitRatios(activeWorkspace.id, nextSplitRatios);
+  }
+
+  function updateRowRatioFromPointer(clientY: number) {
+    if (!terminalStage || !activeResizeHandle) return;
+    const bounds = terminalStage.getBoundingClientRect();
+    const rowIndex = activeResizeHandle.rowIndex;
+    if (rowIndex < 0 || rowIndex >= activeRows.length - 1 || bounds.height <= 0) return;
+    const rawBoundary = (clientY - bounds.top) / bounds.height;
+    const current = tileLayout.rowRatios;
+    const before = current.slice(0, rowIndex + 1).reduce((sum, ratio) => sum + ratio, 0);
+    const delta = rawBoundary - before;
+    const next = [...current];
+    const pairTotal = current[rowIndex] + current[rowIndex + 1];
+    const nextFirst = Math.min(pairTotal - DEFAULT_ROW_MIN_SPLIT, Math.max(DEFAULT_ROW_MIN_SPLIT, current[rowIndex] + delta));
+    next[rowIndex] = nextFirst;
+    next[rowIndex + 1] = pairTotal - nextFirst;
+    setWorkspaceRowRatios(activeWorkspace.id, next);
   }
 
   function resizeActiveSplit(direction: -1 | 1): boolean {
@@ -277,7 +313,8 @@
 
   function handleSplitPointerMove(event: PointerEvent) {
     if (!resizingSplit || splitPointerId !== event.pointerId) return;
-    updateSplitRatioFromPointer(event.clientX);
+    if (activeResizeHandle?.handleIndex === -1) updateRowRatioFromPointer(event.clientY);
+    else updateSplitRatioFromPointer(event.clientX);
   }
 
   function stopSplitResize(pointerId?: number) {
@@ -309,7 +346,12 @@
     window.addEventListener('pointermove', handleSplitPointerMove);
     window.addEventListener('pointerup', handleSplitPointerUp);
     window.addEventListener('pointercancel', handleSplitPointerCancel);
-    updateSplitRatioFromPointer(event.clientX);
+    if (handleIndex === -1) updateRowRatioFromPointer(event.clientY);
+    else updateSplitRatioFromPointer(event.clientX);
+  }
+
+  function toggleMaximize(terminalId: string) {
+    maximizedTerminalId = maximizedTerminalId === terminalId ? null : terminalId;
   }
 
   function moveActiveTerminal(direction: number) {
@@ -322,7 +364,48 @@
   function startTerminalDrag(event: DragEvent, terminalId: string, sourceWorkspaceId: string) {
     draggedTerminal = { terminalId, sourceWorkspaceId };
     event.dataTransfer?.setData('application/x-termdeck-terminal', JSON.stringify(draggedTerminal));
+    event.dataTransfer?.setData('text/plain', terminalId);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  }
+
+  function finishTerminalDrag() {
+    draggedTerminal = null;
+    dragOverWorkspaceId = null;
+  }
+
+  function startPointerTerminalDrag(event: PointerEvent, terminalId: string, sourceWorkspaceId: string) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return;
+    event.preventDefault();
+    pointerDraggedTerminal = { terminalId, sourceWorkspaceId };
+    window.addEventListener('pointermove', handlePointerTerminalMove);
+    window.addEventListener('pointerup', finishPointerTerminalDrag, { once: true });
+  }
+
+  function handlePointerTerminalMove(event: PointerEvent) {
+    if (!pointerDraggedTerminal) return;
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-terminal-id]');
+    document.querySelectorAll<HTMLElement>('[data-terminal-id].drag-target').forEach((element) => element.classList.remove('drag-target'));
+    target?.classList.add('drag-target');
+  }
+
+  function finishPointerTerminalDrag(event: PointerEvent) {
+    window.removeEventListener('pointermove', handlePointerTerminalMove);
+    const payload = pointerDraggedTerminal;
+    pointerDraggedTerminal = null;
+    document.querySelectorAll<HTMLElement>('[data-terminal-id].drag-target').forEach((element) => element.classList.remove('drag-target'));
+    if (!payload) return;
+    const targetElement = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-terminal-id]');
+    const targetId = targetElement?.dataset.terminalId;
+    const target = allTerminals.find((located) => located.terminal.id === targetId);
+    if (!target) return;
+    const targetIndex = workspaces.find((workspace) => workspace.id === target.workspaceId)?.terminals.findIndex((terminal) => terminal.id === targetId) ?? 0;
+    if (payload.sourceWorkspaceId === target.workspaceId) {
+      workspaces = swapTerminalConfig(workspaces, target.workspaceId, payload.terminalId, targetId ?? '');
+      activeWorkspaceId = target.workspaceId;
+    } else {
+      moveTerminal(payload.terminalId, payload.sourceWorkspaceId, target.workspaceId);
+      workspaces = reorderTerminalConfig(workspaces, target.workspaceId, payload.terminalId, targetIndex);
+    }
   }
 
   function dropTerminalOnWorkspace(event: DragEvent, targetWorkspaceId: string) {
@@ -337,10 +420,14 @@
   function dropTerminalOnTerminal(event: DragEvent, targetWorkspaceId: string, targetIndex: number) {
     event.preventDefault();
     event.stopPropagation();
-    const payload = draggedTerminal;
+    const rawPayload = event.dataTransfer?.getData('application/x-termdeck-terminal');
+    const payload = rawPayload
+      ? (() => { try { return JSON.parse(rawPayload) as { terminalId: string; sourceWorkspaceId: string }; } catch { return null; } })()
+      : draggedTerminal;
     if (!payload) return;
     if (payload.sourceWorkspaceId === targetWorkspaceId) {
-      workspaces = reorderTerminalConfig(workspaces, targetWorkspaceId, payload.terminalId, targetIndex);
+      const targetTerminalId = workspaces.find((workspace) => workspace.id === targetWorkspaceId)?.terminals[targetIndex]?.id;
+      if (targetTerminalId) workspaces = swapTerminalConfig(workspaces, targetWorkspaceId, payload.terminalId, targetTerminalId);
       activeWorkspaceId = targetWorkspaceId;
     } else {
       moveTerminal(payload.terminalId, payload.sourceWorkspaceId, targetWorkspaceId);
@@ -348,6 +435,24 @@
     }
     draggedTerminal = null;
     dragOverWorkspaceId = null;
+  }
+
+  function dropOnTerminal(event: DragEvent, workspaceId: string, terminalId: string, targetIndex: number) {
+    if (draggedTerminal) {
+      dropTerminalOnTerminal(event, workspaceId, targetIndex);
+      return;
+    }
+    const path = event.dataTransfer?.getData('text/plain');
+    if (path) {
+      event.preventDefault();
+      event.stopPropagation();
+      invoke<DockPathInfo>('normalize_dock_path', { path }).then((info) => {
+        updateTerminalCwd(workspaceId, terminalId, info.directory);
+        invoke('write_terminal', { sessionId: terminalId, data: `cd "${info.directory.replaceAll('"', '\\"')}"\r` }).catch(() => undefined);
+      }).catch((error) => notify('Unable to change terminal location', String(error)));
+      return;
+    }
+    dropTerminalOnTerminal(event, workspaceId, targetIndex);
   }
 
   function saveName(value: string) {
@@ -376,16 +481,10 @@
       const info = await invoke<DockPathInfo>('normalize_dock_path', { path });
       updateWorkspace(targetWorkspaceId, (workspace) => ({ ...workspace, cwd: info.directory }));
       addTerminal(targetWorkspaceId, info.directory, info.suggestedName);
-      showDockDialog = false;
       notify('Location docked', `Opened a managed shell at ${info.directory}`);
     } catch (error) {
       notify('Unable to dock location', String(error));
     }
-  }
-
-  async function pickDockLocation() {
-    const selected = await open({ directory: true, multiple: false, defaultPath: activeWorkspace.cwd || homePath });
-    if (typeof selected === 'string') await dockPath(selected);
   }
 
   function workspaceAtPoint(position: { x: number; y: number } | undefined): string {
@@ -402,30 +501,39 @@
     return activeWorkspace.id;
   }
 
+  function terminalAtPoint(position: { x: number; y: number } | undefined): LocatedTerminal | null {
+    if (!position) return null;
+    const scale = window.devicePixelRatio || 1;
+    const candidates = [
+      document.elementFromPoint(position.x / scale, position.y / scale),
+      document.elementFromPoint(position.x, position.y),
+    ];
+    for (const candidate of candidates) {
+      const terminalId = candidate?.closest<HTMLElement>('[data-terminal-id]')?.dataset.terminalId;
+      if (terminalId) return allTerminals.find((located) => located.terminal.id === terminalId) ?? null;
+    }
+    return null;
+  }
+
+  async function changeTerminalDirectoryFromDrop(terminal: LocatedTerminal, path: string) {
+    try {
+      const info = await invoke<DockPathInfo>('normalize_dock_path', { path });
+      updateTerminalCwd(terminal.workspaceId, terminal.terminal.id, info.directory);
+      const escaped = info.directory.replaceAll('"', '\\"');
+      await invoke('write_terminal', { sessionId: terminal.terminal.id, data: `cd "${escaped}"\r` });
+    } catch (error) {
+      notify('Unable to change terminal location', String(error));
+    }
+  }
+
   function renameActiveTerminal() {
     const terminal = activeWorkspace.terminals.find((item) => item.id === activeWorkspace.activeTerminalId);
     if (terminal) editing = { kind: 'terminal', workspaceId: activeWorkspace.id, terminalId: terminal.id, value: terminal.name };
   }
 
-  async function transcribeIntoActiveTerminal() {
-    const terminalId = activeWorkspace.activeTerminalId;
-    if (!terminalId || speechActive) return;
-    speechActive = true;
-    try {
-      const transcript = (await invoke<string>('transcribe_speech')).trim();
-      if (transcript) {
-        await invoke('write_terminal', { sessionId: terminalId, data: transcript });
-      }
-    } catch (error) {
-      notify('Speech input unavailable', String(error));
-    } finally {
-      speechActive = false;
-    }
-  }
-
   function handleKeyboard(event: KeyboardEvent) {
-    if (editing || startupEditing || showDockDialog || showSettings) {
-      if (event.key === 'Escape') { editing = null; startupEditing = null; showDockDialog = false; showSettings = false; }
+    if (editing || startupEditing || showSettings) {
+      if (event.key === 'Escape') { editing = null; startupEditing = null; showSettings = false; }
       return;
     }
     if (showShortcuts && event.key === 'Escape') { showShortcuts = false; return; }
@@ -451,8 +559,6 @@
       if (activeWorkspace.activeTerminalId) closeTerminal(activeWorkspace.id, activeWorkspace.activeTerminalId);
     } else if (event.key === 'F2') {
       event.preventDefault(); renameActiveTerminal();
-    } else if (event.ctrlKey && event.shiftKey && event.code === 'Space') {
-      event.preventDefault(); transcribeIntoActiveTerminal();
     } else if (event.ctrlKey && event.key === '/') {
       event.preventDefault(); showShortcuts = !showShortcuts;
     }
@@ -460,7 +566,7 @@
 
   onMount(() => {
     let unlistenDrop: (() => void) | undefined;
-    invoke<EnvironmentInfo>('get_environment').then((environment) => {
+    invoke<EnvironmentInfo>('get_environment').then(async (environment) => {
       homePath = environment.home;
       platform = environment.platform;
       shell = environment.shell;
@@ -473,6 +579,9 @@
           terminals: workspace.terminals.map((terminal) => ({ ...terminal, cwd: terminal.cwd || cwd })),
         };
       });
+      await tick();
+      environmentReady = true;
+      if (allTerminals.length === 0) appReady = true;
       if (environment.smokeTest) {
         let attempts = 0;
         const verifyDesktop = async () => {
@@ -501,10 +610,12 @@
           externalDropWorkspaceId = workspaceAtPoint(event.payload.position);
         } else if (event.payload.type === 'drop') {
           const target = externalDropWorkspaceId || workspaceAtPoint(event.payload.position);
+          const targetTerminal = terminalAtPoint(event.payload.position);
           externalDropActive = false;
           externalDropWorkspaceId = null;
           const path = event.payload.paths[0];
-          if (path) dockPath(path, target);
+          if (path && targetTerminal) changeTerminalDirectoryFromDrop(targetTerminal, path);
+          else if (path) dockPath(path, target);
         } else {
           externalDropActive = false;
           externalDropWorkspaceId = null;
@@ -564,8 +675,6 @@
 
       <button class="new-workspace" on:click={addWorkspace}><Icon name="plus" /> New workspace</button>
       <div class="sidebar-tools">
-        <button on:click={() => { showDockDialog = true; }}><Icon name="dock" /><span><strong>Dock external</strong><small>Drop a location</small></span></button>
-        <button on:click={() => { showFileBrowser = !showFileBrowser; }}><Icon name="folder" /><span><strong>File browser</strong><small>Browse workspace files</small></span></button>
         <button on:click={() => { showShortcuts = true; }}><Icon name="keyboard" /><span><strong>Shortcuts</strong><small>Ctrl + /</small></span></button>
         <button on:click={() => { showSettings = true; }}><Icon name="settings" /><span><strong>Settings</strong><small>Terminal preferences</small></span></button>
       </div>
@@ -584,9 +693,6 @@
           </div>
         </div>
         <div class="header-actions">
-          <button class:active={speechActive} class="button quiet speech-button" title="Dictate into selected terminal (Ctrl+Shift+Space)" on:click={transcribeIntoActiveTerminal}><Icon name="microphone" size={15} /> {speechActive ? 'Listening...' : 'Dictate'}</button>
-            <button class="button quiet" title="Toggle file browser" on:click={() => { showFileBrowser = !showFileBrowser; }}><Icon name="folder" size={15} /> Files</button>
-          <button class="button quiet dock-button" on:click={() => { showDockDialog = true; }}><Icon name="dock" size={15} /> Dock external</button>
           <button class="button primary" on:click={() => addTerminal()}><Icon name="plus" size={16} /> New terminal <kbd>Ctrl ⇧ T</kbd></button>
         </div>
       </header>
@@ -606,6 +712,7 @@
             on:dblclick={() => { editing = { kind: 'terminal', workspaceId: activeWorkspace.id, terminalId: terminal.id, value: terminal.name }; }}
           ><span>{String(index + 1).padStart(2, '0')}</span>{terminal.name}<i></i></button>
         {/each}
+
         <button class="tab-add" aria-label="New terminal" on:click={() => addTerminal()}><Icon name="plus" size={15} /></button>
       </div>
 
@@ -614,20 +721,26 @@
           <div class="empty-state"><div class="empty-icon"><Icon name="terminal" size={28} /></div><p class="overline">AVAILABLE WORKSPACE</p><h2>Ready for a terminal</h2><p>New shells open at <strong>{activeWorkspace.cwd || homePath}</strong> and tile automatically.</p><button class="button primary" on:click={() => addTerminal()}><Icon name="plus" /> New terminal</button></div>
         {/if}
 
+        {#if environmentReady}
         {#each allTerminals as located (located.terminal.id)}
           <TerminalPane
             terminal={located.terminal}
             {smokeTest}
             visible={located.workspaceId === activeWorkspace.id}
             active={located.workspaceId === activeWorkspace.id && located.terminal.id === activeWorkspace.activeTerminalId}
-            positionStyle={tileStyles[located.terminal.id] ?? ''}
+            positionStyle={maximizedTerminalId === located.terminal.id ? 'top: 0; left: 0; width: 100%; height: 100%; z-index: 50' : tileStyles[located.terminal.id] ?? ''}
+            maximized={maximizedTerminalId === located.terminal.id}
+            onmaximize={() => toggleMaximize(located.terminal.id)}
             onactivate={() => activateTerminal(located.workspaceId, located.terminal.id)}
             onclose={() => closeTerminal(located.workspaceId, located.terminal.id)}
             onrename={() => { editing = { kind: 'terminal', workspaceId: located.workspaceId, terminalId: located.terminal.id, value: located.terminal.name }; }}
             onconfigure={() => { startupEditing = { workspaceId: located.workspaceId, terminalId: located.terminal.id }; }}
             ondragstart={(event) => startTerminalDrag(event, located.terminal.id, located.workspaceId)}
+            ondragend={finishTerminalDrag}
+            onpointerdragstart={(event) => startPointerTerminalDrag(event, located.terminal.id, located.workspaceId)}
+            onready={() => markTerminalReady(located.terminal.id)}
             ondragover={(event) => event.preventDefault()}
-            ondrop={(event) => dropTerminalOnTerminal(event, located.workspaceId, located.workspaceId === activeWorkspace.id ? activeWorkspace.terminals.findIndex((terminal) => terminal.id === located.terminal.id) : 0)}
+            ondrop={(event) => dropOnTerminal(event, located.workspaceId, located.terminal.id, located.workspaceId === activeWorkspace.id ? activeWorkspace.terminals.findIndex((terminal) => terminal.id === located.terminal.id) : 0)}
             oncwdchange={(cwd) => updateTerminalCwd(located.workspaceId, located.terminal.id, cwd)}
             retainCommandHistory={settings.retainCommandHistory}
             retainScrollback={settings.retainScrollback}
@@ -638,14 +751,19 @@
             onscrollbackchange={(scrollback) => updateTerminalScrollback(located.workspaceId, located.terminal.id, scrollback)}
           />
         {/each}
+        {/if}
+
 
         {#each splitHandles as handle (`${handle.rowIndex}-${handle.handleIndex}`)}
           <div
             class="terminal-split-handle"
             role="separator"
             aria-label={`Resize terminal panes on row ${handle.rowIndex + 1}`}
-            aria-orientation="vertical"
-            style={`left: calc(${handle.leftPercent}% - 3px); top: calc(${handle.topPercent}% + 8px); height: calc(${handle.heightPercent}% - 16px)`}
+            aria-orientation={handle.handleIndex === -1 ? 'horizontal' : 'vertical'}
+            class:horizontal={handle.handleIndex === -1}
+            style={handle.handleIndex === -1
+              ? `left: 8px; right: 8px; top: calc(${handle.topPercent}% - 3px); height: 6px`
+              : `left: calc(${handle.leftPercent}% - 3px); top: calc(${handle.topPercent}% + 8px); height: calc(${handle.heightPercent}% - 16px)`}
             on:pointerdown={(event) => startSplitResize(event, handle.rowIndex, handle.handleIndex)}
           >
             <span></span>
@@ -660,18 +778,23 @@
       </div>
 
       <footer class="status-bar"><span><i></i> Native PTY connected</span><span>Ctrl+Tab terminals · Alt+Shift+←/→ resize · Ctrl+/ shortcuts</span><span>AUTO TILE <Icon name="grid" size={12} /></span></footer>
-      {#if showFileBrowser}
-        <FileBrowser initialPath={activeWorkspace.cwd || homePath} onclose={() => { showFileBrowser = false; }} onopen={(path) => dockPath(path)} />
-      {/if}
     </main>
   </div>
 </div>
+
+{#if !appReady || workspaceLoading}
+  <div class="app-loading" role="status" aria-live="polite">
+    <div class="app-loading-mark"><Icon name="terminal" size={26} /></div>
+    <strong>{workspaceLoading ? 'Creating workspace' : 'Starting TermDeck'}</strong>
+    <span>{workspaceLoading ? 'Preparing its terminal' : 'Starting your workspaces and terminals'}</span>
+    <i></i>
+  </div>
+{/if}
 
 {#if editing}
   <NameDialog title={editing.kind === 'workspace' ? 'Name this workspace' : 'Name this terminal'} initialValue={editing.value} confirmLabel="Save name" oncancel={() => { editing = null; }} onconfirm={saveName} />
 {/if}
 {#if showShortcuts}<ShortcutOverlay onclose={() => { showShortcuts = false; }} />{/if}
-{#if showDockDialog}<DockDialog onclose={() => { showDockDialog = false; }} onpick={pickDockLocation} />{/if}
 {#if showSettings}<SettingsDialog {settings} onchange={updateSettings} onclose={() => { showSettings = false; }} />{/if}
 {#if startupEditing}
   {@const startupTerminal = workspaces.find((workspace) => workspace.id === startupEditing?.workspaceId)?.terminals.find((terminal) => terminal.id === startupEditing?.terminalId)}
