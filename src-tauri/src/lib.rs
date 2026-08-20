@@ -64,6 +64,7 @@ impl Osc52ClipboardParser {
             });
             let Some((end, terminator_len)) = terminator else {
                 if self.pending.len() > OSC52_PREFIX.len() + MAX_OSC52_ENCODED_BYTES {
+                    self.pending.clear();
                 }
                 break;
             };
