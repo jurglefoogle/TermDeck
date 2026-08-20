@@ -108,8 +108,13 @@
     event.preventDefault();
     if (generation === 0 || !xterm) return;
     try {
-      const text = await invoke<string>('read_clipboard');
-      if (text) xterm.paste(text);
+      if (xterm.hasSelection()) {
+        await invoke('write_clipboard', { text: xterm.getSelection() });
+        xterm.clearSelection();
+      } else {
+        const text = await invoke<string>('read_clipboard');
+        if (text) xterm.paste(text);
+      }
     } catch {
       // Native clipboard access can fail while another application owns it.
     }

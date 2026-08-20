@@ -802,6 +802,13 @@ fn read_clipboard() -> Result<String, String> {
         .map_err(|error| format!("Unable to read clipboard: {error}"))
 }
 
+#[tauri::command]
+fn write_clipboard(text: String) -> Result<(), String> {
+    Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(text))
+        .map_err(|error| format!("Unable to write clipboard: {error}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let manager = TerminalManager::default();
@@ -821,6 +828,7 @@ pub fn run() {
             list_directory,
             open_path,
             read_clipboard,
+            write_clipboard,
         ])
         .build(tauri::generate_context!())
         .expect("error while building TermDeck");
